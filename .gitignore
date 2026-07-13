@@ -1,0 +1,27 @@
+# Rust build artifacts
+/target/
+
+# Backtraces produced by panics
+rustc-ice-*.txt
+
+# Note: Cargo.lock is intentionally committed — this is a binary application,
+# so a locked, reproducible dependency set is desirable.
+
+# Editor / IDE
+.idea/
+*.iml
+*.swp
+*.swo
+*~
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+
+# OS cruft
+.DS_Store
+Thumbs.db
+
+# Environment / secrets (DockerSmith reads config from ~/.config, but guard against
+# any local overrides being committed accidentally)
+.env
+*.local.toml

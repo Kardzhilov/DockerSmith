@@ -1,0 +1,47 @@
+[package]
+name = "dockersmith"
+version = "0.1.0"
+edition = "2021"
+description = "A full-screen terminal UI suite for managing Docker images, containers, updates, and disk usage."
+license = "MIT"
+repository = "https://github.com/mythos/DockerSmith"
+readme = "README.md"
+keywords = ["docker", "tui", "containers", "watchtower", "cleanup"]
+categories = ["command-line-utilities"]
+
+[[bin]]
+name = "dockersmith"
+path = "src/main.rs"
+
+[dependencies]
+# Docker Engine API client (socket, SSH, TCP). SSH enables multi-host; ssl for TCP+TLS.
+bollard = { version = "0.19", features = ["ssh", "ssl"] }
+
+# Async runtime + stream helpers
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "signal"] }
+futures-util = "0.3"
+
+# TUI
+ratatui = "0.29"
+crossterm = { version = "0.28", features = ["event-stream"] }
+
+# Serialization / config
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# HTTP for changelog (GitHub Releases) and notifications (ntfy/Apprise-style webhooks)
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# Utilities
+anyhow = "1"
+thiserror = "1"
+directories = "5"
+humansize = "2"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive"] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
