@@ -145,13 +145,13 @@ jobs:
       - name: Package binary
         shell: bash
         run: |
-          out="dockersmith-${{ matrix.target }}"
+          out="dockersmith-${{ matrix.target }}-${{ needs.version.outputs.tag }}"
           cp "target/${{ matrix.target }}/release/dockersmith" "$out"
 
       - uses: actions/upload-artifact@v5
         with:
-          name: dockersmith-${{ matrix.target }}
-          path: dockersmith-${{ matrix.target }}
+          name: dockersmith-${{ matrix.target }}-${{ needs.version.outputs.tag }}
+          path: dockersmith-${{ matrix.target }}-${{ needs.version.outputs.tag }}
           if-no-files-found: error
 
   release:

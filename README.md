@@ -53,6 +53,31 @@ Docker socket (no shelling out to the `docker` CLI).
 
 ## Install
 
+### Quick install (recommended)
+
+One line — downloads the right binary for your machine, installs it to
+`~/.local/bin`, and adds it to your `PATH`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Kardzhilov/DockerSmith/main/install.sh | sh
+```
+
+Then restart your shell (or `source` your rc file) and run `dockersmith`.
+
+The installer supports a couple of environment overrides:
+
+```sh
+# Install somewhere else (e.g. system-wide — may need sudo):
+curl -fsSL .../install.sh | DOCKERSMITH_INSTALL_DIR=/usr/local/bin sh
+
+# Pin a specific version:
+curl -fsSL .../install.sh | DOCKERSMITH_VERSION=v1.0.0 sh
+```
+
+Already installed? `dockersmith self-update` upgrades to the latest release.
+
+### Build from source
+
 Requires Rust 1.75+ and access to the Docker socket.
 
 ```sh
@@ -61,8 +86,7 @@ cargo build --release
 ```
 
 Prebuilt binaries for Linux (x86_64 and arm64) are attached to each
-[GitHub release](https://github.com/Kardzhilov/DockerSmith/releases). `dockersmith
-self-update` fetches the latest one automatically.
+[GitHub release](https://github.com/Kardzhilov/DockerSmith/releases).
 
 ## Releasing
 

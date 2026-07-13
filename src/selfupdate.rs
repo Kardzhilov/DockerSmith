@@ -35,7 +35,7 @@ pub async fn run(token: Option<&str>) -> Result<()> {
 
     // Determine the asset URL for this platform.
     let target = current_target();
-    let asset_name = format!("dockersmith-{target}");
+    let asset_name = format!("dockersmith-{target}-{}", latest.tag_name);
     let asset_url = format!(
         "https://github.com/{RELEASE_REPO}/releases/download/{}/{asset_name}",
         latest.tag_name
