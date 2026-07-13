@@ -31,7 +31,7 @@ jobs:
       tag: ${{ steps.bump.outputs.tag }}
       release: ${{ steps.bump.outputs.release }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0  # full history + tags for version detection
 
@@ -85,7 +85,7 @@ jobs:
     if: needs.version.outputs.release == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -115,7 +115,7 @@ jobs:
             os: macos-latest
             cross: false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set crate version
         shell: bash
@@ -143,9 +143,9 @@ jobs:
         shell: bash
         run: |
           if [ "${{ matrix.cross }}" = "true" ]; then
-            cross build --release --locked --target ${{ matrix.target }}
+            cross build --release --target ${{ matrix.target }}
           else
-            cargo build --release --locked --target ${{ matrix.target }}
+            cargo build --release --target ${{ matrix.target }}
           fi
 
       - name: Package binary
@@ -154,7 +154,7 @@ jobs:
           out="dockersmith-${{ matrix.target }}"
           cp "target/${{ matrix.target }}/release/dockersmith" "$out"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: dockersmith-${{ matrix.target }}
           path: dockersmith-${{ matrix.target }}
@@ -166,7 +166,7 @@ jobs:
     if: needs.version.outputs.release == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           path: artifacts
           merge-multiple: true
