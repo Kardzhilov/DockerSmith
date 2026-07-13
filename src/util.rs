@@ -31,10 +31,13 @@ impl ImageRef {
         };
 
         // Determine registry vs repository by inspecting the first path segment.
+        // A registry host is only possible when the reference contains a `/`;
+        // otherwise a `:` belongs to the tag (e.g. `postgres:17-alpine`).
         let first_segment = ref_no_digest.split('/').next().unwrap_or("");
-        let has_registry = first_segment.contains('.')
-            || first_segment.contains(':')
-            || first_segment == "localhost";
+        let has_registry = ref_no_digest.contains('/')
+            && (first_segment.contains('.')
+                || first_segment.contains(':')
+                || first_segment == "localhost");
 
         let (registry, remainder) = if has_registry {
             let (reg, rest) = ref_no_digest.split_once('/').unwrap_or((first_segment, ""));
@@ -93,6 +96,15 @@ mod tests {
         assert_eq!(r.registry, "index.docker.io");
         assert_eq!(r.repository, "library/redis");
         assert_eq!(r.tag, "latest");
+    }
+
+    #[test]
+    fn parses_bare_official_image_with_tag() {
+        // Regression: the tag colon must not be mistaken for a registry port.
+        let r = ImageRef::parse("postgres:17-alpine");
+        assert_eq!(r.registry, "index.docker.io");
+        assert_eq!(r.repository, "library/postgres");
+        assert_eq!(r.tag, "17-alpine");
     }
 
     #[test]

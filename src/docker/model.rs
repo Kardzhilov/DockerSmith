@@ -130,8 +130,6 @@ impl DiskUsage {
 /// The result of an update check for a single image/container.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UpdateStatus {
-    /// Not yet checked.
-    Unknown,
     /// Currently being checked.
     Checking,
     /// Local image matches the registry.
@@ -144,16 +142,55 @@ pub enum UpdateStatus {
     Error(String),
 }
 
-impl UpdateStatus {
-    /// Short label for the status column.
-    pub fn label(&self) -> &str {
-        match self {
-            UpdateStatus::Unknown => "-",
-            UpdateStatus::Checking => "checking",
-            UpdateStatus::UpToDate => "up to date",
-            UpdateStatus::UpdateAvailable => "UPDATE",
-            UpdateStatus::LocalOnly => "local",
-            UpdateStatus::Error(_) => "error",
+/// Detailed result of an update check, including version/date comparison.
+#[derive(Debug, Clone)]
+pub struct UpdateInfo {
+    pub status: UpdateStatus,
+    /// Version label of the running/local image (e.g. `16.2`), if published.
+    pub current_version: Option<String>,
+    /// Version label of the latest registry image, if published.
+    pub latest_version: Option<String>,
+    /// Creation date (YYYY-MM-DD) of the local image.
+    pub current_date: Option<String>,
+    /// Creation date (YYYY-MM-DD) of the latest registry image.
+    pub latest_date: Option<String>,
+    /// Best-guess GitHub `owner/repo` for the changelog, if determinable.
+    pub changelog_repo: Option<String>,
+}
+
+impl UpdateInfo {
+    /// An info carrying only a status (used for placeholders and the scheduler).
+    pub fn from_status(status: UpdateStatus) -> Self {
+        Self {
+            status,
+            current_version: None,
+            latest_version: None,
+            current_date: None,
+            latest_date: None,
+            changelog_repo: None,
+        }
+    }
+
+    /// The best available "current" identifier: version, else date.
+    pub fn current_label(&self) -> Option<String> {
+        self.current_version
+            .clone()
+            .or_else(|| self.current_date.clone())
+    }
+
+    /// The best available "latest" identifier: version, else date.
+    pub fn latest_label(&self) -> Option<String> {
+        self.latest_version
+            .clone()
+            .or_else(|| self.latest_date.clone())
+    }
+
+    /// A compact `current → latest` string for the table, when both are known.
+    pub fn transition(&self) -> Option<String> {
+        match (self.current_label(), self.latest_label()) {
+            (Some(a), Some(b)) => Some(format!("{a} → {b}")),
+            _ => None,
         }
     }
 }
+

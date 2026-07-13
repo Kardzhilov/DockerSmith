@@ -8,7 +8,8 @@ use ratatui::widgets::{
 };
 use ratatui::Frame;
 
-use super::{App, ConfirmAction, Overlay, Tab};use crate::docker::model::UpdateStatus;
+use super::{App, ConfirmAction, Overlay, Tab};
+use crate::docker::model::{UpdateInfo, UpdateStatus};
 use crate::util::format_bytes;
 
 /// Top-level draw entry point.
@@ -36,6 +37,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         Overlay::Help => draw_help(f, app),
         Overlay::Prune => draw_prune_menu(f, app),
         Overlay::Palette => draw_palette(f, app),
+        Overlay::UpdateDetails => draw_update_details(f, app),
         Overlay::Confirm(action) => draw_confirm(f, app, action),
         Overlay::Logs | Overlay::Changelog => draw_scroll_overlay(f, app),
     }
@@ -79,11 +81,9 @@ fn draw_images(f: &mut Frame, app: &App, area: Rect) {
         .iter()
         .enumerate()
         .map(|(i, img)| {
-            let update = img
+            let info = img
                 .primary_reference()
-                .and_then(|r| app.updates().get(&r))
-                .cloned()
-                .unwrap_or(UpdateStatus::Unknown);
+                .and_then(|r| app.updates().get(&r).cloned());
             let style = row_style(theme, i == app.selected());
             Row::new(vec![
                 Cell::from(img.display_name()),
@@ -93,7 +93,7 @@ fn draw_images(f: &mut Frame, app: &App, area: Rect) {
                 } else {
                     format!("{} container(s)", img.containers.max(0))
                 }),
-                Cell::from(update_span(theme, &update)),
+                Cell::from(update_cell(theme, info.as_ref())),
             ])
             .style(style)
         })
@@ -102,10 +102,10 @@ fn draw_images(f: &mut Frame, app: &App, area: Rect) {
     let table = Table::new(
         rows,
         [
-            Constraint::Percentage(50),
+            Constraint::Percentage(40),
             Constraint::Length(12),
             Constraint::Length(16),
-            Constraint::Length(14),
+            Constraint::Min(20),
         ],
     )
     .header(header)
@@ -123,11 +123,7 @@ fn draw_containers(f: &mut Frame, app: &App, area: Rect) {
         .iter()
         .enumerate()
         .map(|(i, c)| {
-            let update = app
-                .updates()
-                .get(&c.image)
-                .cloned()
-                .unwrap_or(UpdateStatus::Unknown);
+            let info = app.updates().get(&c.image).cloned();
             let (cpu, mem) = match app.stats().get(&c.image) {
                 Some(s) => (
                     format!("{:.1}", s.cpu_percent),
@@ -151,7 +147,7 @@ fn draw_containers(f: &mut Frame, app: &App, area: Rect) {
                 Cell::from(Span::styled(state_text, state_style)),
                 Cell::from(cpu),
                 Cell::from(mem),
-                Cell::from(update_span(theme, &update)),
+                Cell::from(update_cell(theme, info.as_ref())),
             ])
             .style(row_style(theme, i == app.selected()))
         })
@@ -160,12 +156,12 @@ fn draw_containers(f: &mut Frame, app: &App, area: Rect) {
     let table = Table::new(
         rows,
         [
-            Constraint::Percentage(22),
-            Constraint::Percentage(30),
+            Constraint::Percentage(20),
+            Constraint::Percentage(26),
             Constraint::Length(14),
             Constraint::Length(7),
-            Constraint::Length(14),
-            Constraint::Length(12),
+            Constraint::Length(13),
+            Constraint::Min(16),
         ],
     )
     .header(header)
@@ -296,9 +292,9 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
 
     let keys = match app.tab() {
         Tab::Containers => {
-            "q quit · : palette · ⇥ tab · u/U check · a apply · s start/stop · R restart · L logs · w changelog · x rm · d defer · p prune · T theme · ? help"
+            "q quit · : palette · ⇥ tab · u/U check · ⏎ details · a apply · s start/stop · R restart · L logs · w changelog · x rm · d defer · p prune · ? help"
         }
-        Tab::Images => "q quit · : palette · ⇥ tab · u/U check · w changelog · d defer · p prune · T theme · ? help",
+        Tab::Images => "q quit · : palette · ⇥ tab · u/U check · ⏎ details · w changelog · d defer · p prune · T theme · ? help",
         Tab::Space => "q quit · : palette · ⇥ tab · p prune · r refresh · T theme · ? help",
     };
     let help = Paragraph::new(Span::styled(keys, Style::default().fg(theme.dim)));
@@ -319,6 +315,7 @@ fn draw_help(f: &mut Frame, app: &App) {
         Line::from("  ↑↓ / j k     move selection"),
         Line::from("  r            refresh"),
         Line::from("  u / U        check update (selected / all)"),
+        Line::from("  ⏎            update details (versions, dates, changelog)"),
         Line::from("  a            apply update (opt-in; container tab)"),
         Line::from("  s            start/stop container"),
         Line::from("  R            restart container"),
@@ -497,15 +494,135 @@ fn row_style(theme: &crate::theme::Theme, selected: bool) -> Style {
     }
 }
 
-fn update_span(theme: &crate::theme::Theme, status: &UpdateStatus) -> Span<'static> {
-    let color = match status {
-        UpdateStatus::UpdateAvailable => theme.warn,
-        UpdateStatus::UpToDate => theme.ok,
-        UpdateStatus::Error(_) => theme.err,
-        _ => theme.dim,
+fn update_cell(theme: &crate::theme::Theme, info: Option<&UpdateInfo>) -> Line<'static> {
+    let Some(info) = info else {
+        return Line::from(Span::styled("-", Style::default().fg(theme.dim)));
     };
-    Span::styled(status.label().to_string(), Style::default().fg(color))
+    let (text, color) = match &info.status {
+        UpdateStatus::UpdateAvailable => (
+            info.transition().unwrap_or_else(|| "UPDATE".to_string()),
+            theme.warn,
+        ),
+        UpdateStatus::UpToDate => (
+            info.latest_label()
+                .map(|v| format!("up to date ({v})"))
+                .unwrap_or_else(|| "up to date".to_string()),
+            theme.ok,
+        ),
+        UpdateStatus::Checking => ("checking…".to_string(), theme.dim),
+        UpdateStatus::LocalOnly => ("local build".to_string(), theme.dim),
+        UpdateStatus::Error(_) => ("error".to_string(), theme.err),
+    };
+    Line::from(Span::styled(text, Style::default().fg(color)))
 }
+
+/// The update-details overlay: current vs latest version/date plus changelog link.
+fn draw_update_details(f: &mut Frame, app: &App) {
+    let theme = app.theme();
+    let area = centered_rect(66, 55, f.area());
+    f.render_widget(Clear, area);
+
+    let Some((image, info)) = app.selected_update() else {
+        f.render_widget(
+            Paragraph::new("No image selected.").block(overlay_block(theme, " Update details ")),
+            area,
+        );
+        return;
+    };
+
+    let label = |s: &str| Span::styled(format!("{s:<10}"), Style::default().fg(theme.secondary));
+    let val = |s: String, c: ratatui::style::Color| Span::styled(s, Style::default().fg(c));
+    let dash = "—".to_string();
+
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::from(Span::styled(
+        image.clone(),
+        Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::from(""));
+
+    match info {
+        None => {
+            lines.push(Line::from(Span::styled(
+                "Not checked yet — press u to check for updates.",
+                Style::default().fg(theme.dim),
+            )));
+        }
+        Some(info) => {
+            let status_span = match &info.status {
+                UpdateStatus::UpdateAvailable => {
+                    val("UPDATE AVAILABLE".to_string(), theme.warn)
+                }
+                UpdateStatus::UpToDate => val("up to date".to_string(), theme.ok),
+                UpdateStatus::Checking => val("checking…".to_string(), theme.dim),
+                UpdateStatus::LocalOnly => {
+                    val("locally built (no registry image)".to_string(), theme.dim)
+                }
+                UpdateStatus::Error(e) => val(format!("error: {e}"), theme.err),
+            };
+            lines.push(Line::from(vec![label("status"), status_span]));
+            lines.push(Line::from(""));
+
+            lines.push(Line::from(vec![
+                label("current"),
+                val(info.current_version.clone().unwrap_or_else(|| dash.clone()), theme.fg),
+                Span::styled(
+                    format!("   ({})", info.current_date.clone().unwrap_or_else(|| dash.clone())),
+                    Style::default().fg(theme.dim),
+                ),
+            ]));
+            lines.push(Line::from(vec![
+                label("latest"),
+                val(
+                    info.latest_version.clone().unwrap_or_else(|| dash.clone()),
+                    if info.status == UpdateStatus::UpdateAvailable {
+                        theme.warn
+                    } else {
+                        theme.fg
+                    },
+                ),
+                Span::styled(
+                    format!("   ({})", info.latest_date.clone().unwrap_or_else(|| dash.clone())),
+                    Style::default().fg(theme.dim),
+                ),
+            ]));
+            lines.push(Line::from(""));
+
+            match &info.changelog_repo {
+                Some(repo) => {
+                    lines.push(Line::from(vec![
+                        label("changelog"),
+                        val(format!("github.com/{repo}"), theme.accent),
+                    ]));
+                    lines.push(Line::from(Span::styled(
+                        "  press w to fetch release notes",
+                        Style::default().fg(theme.dim),
+                    )));
+                }
+                None => {
+                    lines.push(Line::from(vec![
+                        label("changelog"),
+                        val("not available for this image".to_string(), theme.dim),
+                    ]));
+                }
+            }
+        }
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  u recheck · w changelog · Esc close",
+        Style::default().fg(theme.dim),
+    )));
+
+    f.render_widget(
+        Paragraph::new(lines)
+            .block(overlay_block(theme, " Update details "))
+            .wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
 
 /// A centered rectangle occupying `percent_x` × `percent_y` of `r`.
 fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {

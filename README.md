@@ -14,8 +14,10 @@ Docker socket (no shelling out to the `docker` CLI).
 - **Images & containers** — browse all images and running/stopped containers with
   size, state, and live CPU/memory for the selected container.
 - **Update checking** — compares your local image digest against the registry
-  manifest (no layers pulled) to flag available updates. Works with Docker Hub,
-  GHCR, `lscr.io`, and private/self-hosted registries via the daemon's credentials.
+  manifest (no layers pulled) to flag available updates. Press `⏎` on any row for
+  a details view showing the **current vs latest version and build date**, plus a
+  changelog link. Works with Docker Hub, GHCR, `lscr.io`, and private/self-hosted
+  registries via the daemon's credentials.
 - **Disk usage & prune** — a Space view mirroring `docker system df` with a
   reclaimable breakdown per category, plus one-key pruning (dangling/all images,
   stopped containers, unused volumes, build cache, or everything).
@@ -65,6 +67,7 @@ dockersmith self-update     # update the binary to the latest release
 | `↑↓` / `j k` | move selection |
 | `r` | refresh |
 | `u` / `U` | check update (selected / all) |
+| `⏎` | update details (current→latest version/date + changelog) |
 | `a` | apply update (opt-in) |
 | `s` · `R` · `x` | start/stop · restart · remove container |
 | `L` · `w` | logs · changelog |
@@ -104,6 +107,12 @@ the current manifest descriptor digest (`inspect_registry_image`, the Engine API
 distribution inspect). No image layers are transferred. If the digests differ, an
 update is available. Registry authentication is handled by the Docker daemon, so any
 registry your daemon can pull from — including private ones — works automatically.
+
+For the **details view** (`⏎`), DockerSmith additionally reads the local and remote
+image **config blobs** (a few KB each, still no layers) to extract the version label
+(`org.opencontainers.image.version` and common fallbacks) and build date, so it can
+show `current → latest`. When no version label is published, it falls back to the
+image creation dates.
 
 ## License
 

@@ -59,16 +59,26 @@ pub async fn run_check(cfg: Config, host: Option<String>) -> Result<()> {
 
     let mut updates = 0usize;
     for c in &containers {
-        let status = client.check_update(&c.image).await;
-        match status {
-            Ok(true) => {
+        let info = client.check_update_detailed(&c.image).await;
+        use crate::docker::model::UpdateStatus;
+        let detail = match (info.current_label(), info.latest_label()) {
+            (Some(a), Some(b)) => format!("  {a} → {b}"),
+            (Some(a), None) => format!("  ({a})"),
+            _ => String::new(),
+        };
+        match info.status {
+            UpdateStatus::UpdateAvailable => {
                 updates += 1;
-                println!("  UPDATE   {:<24} {}", c.display_name(), c.image);
+                println!("  UPDATE   {:<24} {}{detail}", c.display_name(), c.image);
             }
-            Ok(false) => {
-                println!("  ok       {:<24} {}", c.display_name(), c.image);
+            UpdateStatus::UpToDate => {
+                println!("  ok       {:<24} {}{detail}", c.display_name(), c.image);
             }
-            Err(e) => {
+            UpdateStatus::LocalOnly => {
+                println!("  local    {:<24} {}", c.display_name(), c.image);
+            }
+            UpdateStatus::Checking => {}
+            UpdateStatus::Error(e) => {
                 println!("  ?        {:<24} {}  ({e})", c.display_name(), c.image);
             }
         }

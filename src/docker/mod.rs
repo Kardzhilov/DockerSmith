@@ -12,7 +12,7 @@ use bollard::query_parameters::{
 use bollard::{Docker, API_DEFAULT_VERSION};
 use futures_util::StreamExt;
 
-pub use model::{ContainerInfo, DiskUsage, ImageInfo, UpdateStatus};
+pub use model::{ContainerInfo, DiskUsage, ImageInfo, UpdateInfo, UpdateStatus};
 
 /// A connected Docker client for a single host.
 #[derive(Clone)]
@@ -151,19 +151,78 @@ impl DockerClient {
         Ok(!up_to_date)
     }
 
-    /// Detailed update status, distinguishing local-only images from errors.
-    pub async fn update_status(&self, image: &str) -> UpdateStatus {
-        match self.check_update(image).await {
-            Ok(true) => UpdateStatus::UpdateAvailable,
-            Ok(false) => UpdateStatus::UpToDate,
+    /// A rich update check: compares the local and registry images and returns
+    /// their version labels and creation dates plus a changelog source guess.
+    ///
+    /// Never fails — failures are captured in the returned status.
+    pub async fn check_update_detailed(&self, image: &str) -> UpdateInfo {
+        let changelog_repo = crate::util::ImageRef::parse(image).guess_github_repo();
+
+        // Local image metadata.
+        let local = match self.docker.inspect_image(image).await {
+            Ok(l) => l,
             Err(e) => {
-                let msg = e.to_string();
-                if msg.contains("no registry digest") {
-                    UpdateStatus::LocalOnly
+                return UpdateInfo {
+                    status: UpdateStatus::Error(e.to_string()),
+                    changelog_repo,
+                    ..UpdateInfo::from_status(UpdateStatus::Error(String::new()))
+                };
+            }
+        };
+
+        let local_id = local.id.clone().unwrap_or_default();
+        let current_date = local
+            .created
+            .as_ref()
+            .map(|c| c.chars().take(10).collect::<String>())
+            .filter(|s| !s.is_empty());
+        let current_version = local
+            .config
+            .as_ref()
+            .and_then(|c| c.labels.as_ref())
+            .and_then(|labels| {
+                crate::registry::VERSION_LABELS
+                    .iter()
+                    .find_map(|k| labels.get(*k).filter(|v| !v.is_empty()).cloned())
+            });
+
+        // Locally-built images have no registry digest to compare against.
+        if local.repo_digests.clone().unwrap_or_default().is_empty() {
+            return UpdateInfo {
+                status: UpdateStatus::LocalOnly,
+                current_version,
+                current_date,
+                changelog_repo,
+                latest_version: None,
+                latest_date: None,
+            };
+        }
+
+        // Remote image metadata (no layers pulled).
+        match crate::registry::fetch_remote_meta(image).await {
+            Ok(meta) => {
+                let status = if local_id == meta.config_digest {
+                    UpdateStatus::UpToDate
                 } else {
-                    UpdateStatus::Error(msg)
+                    UpdateStatus::UpdateAvailable
+                };
+                UpdateInfo {
+                    status,
+                    current_version,
+                    latest_version: meta.version,
+                    current_date,
+                    latest_date: meta.created,
+                    changelog_repo,
                 }
             }
+            Err(e) => UpdateInfo {
+                status: UpdateStatus::Error(format!("{e:#}")),
+                current_version,
+                current_date,
+                changelog_repo,
+                latest_version: None,
+                latest_date: None,
+            },
         }
     }
 

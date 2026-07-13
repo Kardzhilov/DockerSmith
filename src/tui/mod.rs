@@ -21,7 +21,7 @@ use ratatui::Terminal;
 use tokio::sync::mpsc::{self, UnboundedSender};
 
 use crate::config::{ApplyMode, Config, State};
-use crate::docker::model::UpdateStatus;
+use crate::docker::model::{UpdateInfo, UpdateStatus};
 use crate::docker::{ContainerInfo, ContainerStats, DiskUsage, DockerClient, ImageInfo};
 use crate::registry;
 use crate::theme::Theme;
@@ -68,6 +68,8 @@ pub enum Overlay {
     Prune,
     /// Fuzzy command palette.
     Palette,
+    /// Details of the selected image's update check (versions, dates, changelog).
+    UpdateDetails,
     /// A yes/no confirmation, carrying the action to run on confirm.
     Confirm(ConfirmAction),
 }
@@ -122,7 +124,7 @@ enum AppEvent {
     Input(CEvent),
     Tick,
     /// An update check completed for an image reference.
-    UpdateResult(String, UpdateStatus),
+    UpdateResult(String, UpdateInfo),
     /// Data reloaded from the daemon.
     Reloaded(ReloadData),
     /// Container logs loaded.
@@ -161,7 +163,7 @@ pub struct App {
     selected: usize,
 
     /// image reference -> latest known update status.
-    updates: HashMap<String, UpdateStatus>,
+    updates: HashMap<String, UpdateInfo>,
     /// image reference -> latest stats sample.
     stats: HashMap<String, ContainerStats>,
 
@@ -256,7 +258,7 @@ pub async fn run(config: Config) -> Result<()> {
                         updated.push(format!("{} ({})", c.name, c.image));
                         let _ = scheduler_tx.send(AppEvent::UpdateResult(
                             c.image.clone(),
-                            UpdateStatus::UpdateAvailable,
+                            UpdateInfo::from_status(UpdateStatus::UpdateAvailable),
                         ));
                     }
                 }
@@ -321,8 +323,15 @@ impl App {
     pub fn selected(&self) -> usize {
         self.selected
     }
-    pub fn updates(&self) -> &HashMap<String, UpdateStatus> {
+    pub fn updates(&self) -> &HashMap<String, UpdateInfo> {
         &self.updates
+    }
+
+    /// The selected row's image reference plus its update info, if any.
+    pub fn selected_update(&self) -> Option<(String, Option<&UpdateInfo>)> {
+        let image = self.selected_image_ref()?;
+        let info = self.updates.get(&image);
+        Some((image, info))
     }
     pub fn stats(&self) -> &HashMap<String, ContainerStats> {
         &self.stats
@@ -415,11 +424,15 @@ impl App {
                     self.spawn_stats_refresh();
                 }
             }
-            AppEvent::UpdateResult(image, status) => {
-                if status == UpdateStatus::UpdateAvailable {
-                    self.status_message = format!("update available: {image}");
+            AppEvent::UpdateResult(image, info) => {
+                if info.status == UpdateStatus::UpdateAvailable {
+                    let detail = info
+                        .transition()
+                        .map(|t| format!(": {t}"))
+                        .unwrap_or_default();
+                    self.status_message = format!("update available: {image}{detail}");
                 }
-                self.updates.insert(image, status);
+                self.updates.insert(image, info);
             }
             AppEvent::Reloaded(data) => {
                 self.images = data.images;
@@ -494,6 +507,7 @@ impl App {
             }
             (KeyCode::Char('u'), _) => self.check_selected_update(),
             (KeyCode::Char('U'), _) => self.check_all_updates(),
+            (KeyCode::Enter, _) => self.overlay = Overlay::UpdateDetails,
             (KeyCode::Char('a'), _) => self.apply_selected_update(),
             (KeyCode::Char('L'), _) => self.open_logs(),
             (KeyCode::Char('w'), _) => self.open_changelog(),
@@ -565,6 +579,20 @@ impl App {
                 }
                 KeyCode::Up | KeyCode::Char('k') => {
                     self.overlay_scroll = self.overlay_scroll.saturating_sub(1);
+                }
+                _ => {}
+            },
+            Overlay::UpdateDetails => match key.code {
+                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Enter => {
+                    self.overlay = Overlay::None;
+                }
+                KeyCode::Char('w') => {
+                    self.overlay = Overlay::None;
+                    self.open_changelog();
+                }
+                KeyCode::Char('u') => {
+                    self.overlay = Overlay::None;
+                    self.check_selected_update();
                 }
                 _ => {}
             },
@@ -672,7 +700,8 @@ impl App {
 
     fn check_selected_update(&mut self) {
         if let Some(image) = self.selected_image_ref() {
-            self.updates.insert(image.clone(), UpdateStatus::Checking);
+            self.updates
+                .insert(image.clone(), UpdateInfo::from_status(UpdateStatus::Checking));
             self.spawn_update_check(image);
         }
     }
@@ -692,7 +721,8 @@ impl App {
             if self.state.is_deferred(&image) {
                 continue;
             }
-            self.updates.insert(image.clone(), UpdateStatus::Checking);
+            self.updates
+                .insert(image.clone(), UpdateInfo::from_status(UpdateStatus::Checking));
             self.spawn_update_check(image);
         }
     }
@@ -701,8 +731,8 @@ impl App {
         let client = self.client.clone();
         let tx = self.tx.clone();
         tokio::spawn(async move {
-            let status = client.update_status(&image).await;
-            let _ = tx.send(AppEvent::UpdateResult(image, status));
+            let info = client.check_update_detailed(&image).await;
+            let _ = tx.send(AppEvent::UpdateResult(image, info));
         });
     }
 
