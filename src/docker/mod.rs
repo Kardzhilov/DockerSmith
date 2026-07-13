@@ -86,24 +86,52 @@ impl DockerClient {
     }
 
     /// List containers. When `all` is false, only running containers are returned.
+    ///
+    /// When `docker ps` reports a container's image as a bare image id (which
+    /// happens once its tag has been re-pulled to a newer image), the original
+    /// `repo:tag` reference is recovered from the container config so update
+    /// checks can still query the registry.
     pub async fn list_containers(&self, all: bool) -> Result<Vec<ContainerInfo>> {
+        use bollard::query_parameters::InspectContainerOptions;
+
         let options = ListContainersOptionsBuilder::default().all(all).build();
         let containers = self.docker.list_containers(Some(options)).await?;
-        Ok(containers
-            .into_iter()
-            .map(|c| ContainerInfo {
-                id: c.id.unwrap_or_default(),
+
+        let mut result = Vec::with_capacity(containers.len());
+        for c in containers {
+            let id = c.id.unwrap_or_default();
+            let mut image = c.image.unwrap_or_default();
+
+            // Recover a proper reference if the summary only gave an image id.
+            if looks_like_image_id(&image) {
+                if let Ok(inspect) = self
+                    .docker
+                    .inspect_container(&id, None::<InspectContainerOptions>)
+                    .await
+                {
+                    if let Some(cfg_img) = inspect.config.and_then(|cfg| cfg.image) {
+                        if !cfg_img.is_empty() && !looks_like_image_id(&cfg_img) {
+                            image = cfg_img;
+                        }
+                    }
+                }
+            }
+
+            result.push(ContainerInfo {
+                id,
                 name: c
                     .names
                     .unwrap_or_default()
                     .first()
                     .map(|n| n.trim_start_matches('/').to_string())
                     .unwrap_or_default(),
-                image: c.image.unwrap_or_default(),
+                image,
+                image_id: c.image_id.unwrap_or_default(),
                 state: c.state.map(|s| s.to_string()).unwrap_or_default(),
                 status: c.status.unwrap_or_default(),
-            })
-            .collect())
+            });
+        }
+        Ok(result)
     }
 
     /// Aggregate disk usage, computed like `docker system df`.
@@ -112,53 +140,21 @@ impl DockerClient {
         Ok(compute_disk_usage(&df))
     }
 
-    /// Check whether a newer image than the local one exists in the registry.
+    /// A rich update check.
     ///
-    /// Compares the local `RepoDigest` for this reference against the registry's
-    /// manifest descriptor digest. Returns `true` when they differ.
-    pub async fn check_update(&self, image: &str) -> Result<bool> {
-        // Local digest(s) for this image.
-        let local = self
-            .docker
-            .inspect_image(image)
-            .await
-            .with_context(|| format!("inspecting local image {image}"))?;
-
-        let repo_digests = local.repo_digests.unwrap_or_default();
-        if repo_digests.is_empty() {
-            return Err(anyhow!("image {image} has no registry digest (built locally?)"));
-        }
-
-        // Registry descriptor digest (no layers pulled).
-        let remote = self
-            .docker
-            .inspect_registry_image(image, None)
-            .await
-            .with_context(|| format!("querying registry for {image}"))?;
-        let remote_digest = remote
-            .descriptor
-            .digest
-            .filter(|d| !d.is_empty())
-            .ok_or_else(|| anyhow!("registry returned no digest for {image}"))?;
-
-        // If any local repo digest matches the remote, we're up to date.
-        let up_to_date = repo_digests.iter().any(|rd| {
-            rd.rsplit_once('@')
-                .map(|(_, d)| d == remote_digest)
-                .unwrap_or(false)
-        });
-        Ok(!up_to_date)
-    }
-
-    /// A rich update check: compares the local and registry images and returns
-    /// their version labels and creation dates plus a changelog source guess.
+    /// - `local_image` identifies the image the target is actually running (an id
+    ///   for a container, or a tag for the images view) — used to read the local
+    ///   digest, version label, and build date.
+    /// - `registry_ref` is the `repo:tag` used to query the registry.
     ///
-    /// Never fails — failures are captured in the returned status.
-    pub async fn check_update_detailed(&self, image: &str) -> UpdateInfo {
-        let changelog_repo = crate::util::ImageRef::parse(image).guess_github_repo();
+    /// Comparing the *running* image's digest against the registry means a
+    /// container still on an old image is correctly flagged even after its tag was
+    /// re-pulled. Never fails — failures are captured in the returned status.
+    pub async fn check_update_detailed(&self, local_image: &str, registry_ref: &str) -> UpdateInfo {
+        let changelog_repo = crate::util::ImageRef::parse(registry_ref).guess_github_repo();
 
-        // Local image metadata.
-        let local = match self.docker.inspect_image(image).await {
+        // Local image metadata (the image actually in use).
+        let local = match self.docker.inspect_image(local_image).await {
             Ok(l) => l,
             Err(e) => {
                 return UpdateInfo {
@@ -185,9 +181,10 @@ impl DockerClient {
                     .find_map(|k| labels.get(*k).filter(|v| !v.is_empty()).cloned())
             });
 
-        // Locally-built images have no registry digest to compare against.
         let repo_digests = local.repo_digests.clone().unwrap_or_default();
-        if repo_digests.is_empty() {
+
+        // Without a registry reference or a local digest we cannot compare.
+        if repo_digests.is_empty() || looks_like_image_id(registry_ref) {
             return UpdateInfo {
                 status: UpdateStatus::LocalOnly,
                 current_version,
@@ -200,10 +197,10 @@ impl DockerClient {
             };
         }
 
-        // Determine status by comparing manifest digests via the daemon's
-        // distribution-inspect (robust across image stores and multi-arch, and
-        // uses the daemon's registry credentials for private registries).
-        let status = match self.docker.inspect_registry_image(image, None).await {
+        // Determine status by comparing the running image's manifest digest against
+        // the registry's current digest (daemon distribution-inspect: robust across
+        // image stores, multi-arch, and private registries via daemon credentials).
+        let status = match self.docker.inspect_registry_image(registry_ref, None).await {
             Ok(remote) => match remote.descriptor.digest.filter(|d| !d.is_empty()) {
                 Some(remote_digest) => {
                     let up_to_date = repo_digests.iter().any(|rd| {
@@ -224,10 +221,11 @@ impl DockerClient {
 
         // Best-effort enrichment: the latest image's version label and build date,
         // read from the registry config blob (a few KB, no layers).
-        let (latest_version, latest_date) = match crate::registry::fetch_remote_meta(image).await {
-            Ok(meta) => (meta.version, meta.created),
-            Err(_) => (None, None),
-        };
+        let (latest_version, latest_date) =
+            match crate::registry::fetch_remote_meta(registry_ref).await {
+                Ok(meta) => (meta.version, meta.created),
+                Err(_) => (None, None),
+            };
 
         UpdateInfo {
             status,
@@ -619,6 +617,17 @@ fn split_ref_for_pull(image: &str) -> (String, String) {
         }
     }
     (image.to_string(), "latest".to_string())
+}
+
+/// Whether a string is a bare image id rather than a `repo:tag` reference.
+///
+/// `docker ps` reports the image as an id (e.g. `sha256:…` or a long hex string)
+/// once a container's tag has been re-pulled to a newer image.
+fn looks_like_image_id(s: &str) -> bool {
+    if let Some(hex) = s.strip_prefix("sha256:") {
+        return hex.len() >= 12 && hex.chars().all(|c| c.is_ascii_hexdigit());
+    }
+    s.len() >= 12 && s.chars().all(|c| c.is_ascii_hexdigit())
 }
 
 /// Compute [`DiskUsage`] from a bollard `df` response, matching `docker system df`.

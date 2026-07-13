@@ -67,7 +67,7 @@ pub async fn run_check(cfg: Config, host: Option<String>) -> Result<()> {
 
     let mut updates = 0usize;
     for c in &containers {
-        let info = client.check_update_detailed(&c.image).await;
+        let info = client.check_update_detailed(&c.image_id, &c.image).await;
         use crate::docker::model::UpdateStatus;
         match info.status {
             UpdateStatus::UpdateAvailable => {

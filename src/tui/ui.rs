@@ -377,6 +377,7 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect, regions: &mut Vec<ClickRegi
             ("r refresh", UiAction::Refresh),
         ]),
     }
+    segments.push(("y select", UiAction::ToggleMouse));
     segments.push(("T theme", UiAction::CycleTheme));
     segments.push(("? help", UiAction::Help));
 
@@ -426,6 +427,7 @@ fn draw_help(f: &mut Frame, app: &App) {
         Line::from("  x            remove container"),
         Line::from("  d            defer update 30 days"),
         Line::from("  p            prune menu"),
+        Line::from("  y            select mode (mouse off, so you can copy text)"),
         Line::from("  T            cycle theme"),
         Line::from("  q / Esc      quit / close overlay"),
     ];

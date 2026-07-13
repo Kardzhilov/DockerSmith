@@ -143,6 +143,7 @@ pub enum UiAction {
     Defer,
     OpenPrune,
     CycleTheme,
+    ToggleMouse,
     Help,
     OpenPalette,
     Quit,
@@ -327,6 +328,9 @@ pub struct App {
     /// Clickable regions recorded during the last render.
     regions: Vec<ClickRegion>,
 
+    /// Whether mouse capture is on. Turning it off lets the terminal select text.
+    mouse_enabled: bool,
+
     tx: UnboundedSender<AppEvent>,
 }
 
@@ -362,6 +366,7 @@ pub async fn run(config: Config) -> Result<()> {
         palette_index: 0,
         apply: None,
         regions: Vec::new(),
+        mouse_enabled: true,
         config,
         tx: tx.clone(),
     };
@@ -407,12 +412,11 @@ pub async fn run(config: Config) -> Result<()> {
                 let containers = client.list_containers(true).await.unwrap_or_default();
                 let mut updated = Vec::new();
                 for c in &containers {
-                    if let Ok(true) = client.check_update(&c.image).await {
+                    let info = client.check_update_detailed(&c.image_id, &c.image).await;
+                    if info.status == UpdateStatus::UpdateAvailable {
                         updated.push(format!("{} ({})", c.name, c.image));
-                        let _ = scheduler_tx.send(AppEvent::UpdateResult(
-                            c.image.clone(),
-                            UpdateInfo::from_status(UpdateStatus::UpdateAvailable),
-                        ));
+                        let _ = scheduler_tx
+                            .send(AppEvent::UpdateResult(c.image.clone(), info));
                     }
                 }
                 if !updated.is_empty() {
@@ -564,6 +568,24 @@ impl App {
         }
     }
 
+    /// The `(local_image, registry_ref)` pair for checking the current selection.
+    ///
+    /// For containers the local side is the *running* image id so a container still
+    /// on an old image is detected even after its tag moved.
+    fn selected_check_target(&self) -> Option<(String, String)> {
+        match self.tab {
+            Tab::Images => {
+                let img = self.images.get(self.selected)?;
+                Some((img.id.clone(), img.primary_reference()?))
+            }
+            Tab::Containers => {
+                let c = self.containers.get(self.selected)?;
+                Some((c.image_id.clone(), c.image.clone()))
+            }
+            Tab::Space => None,
+        }
+    }
+
     // ── Event handling ─────────────────────────────────────────────────────
     async fn handle_event(&mut self, event: AppEvent) -> Result<()> {
         match event {
@@ -689,6 +711,7 @@ impl App {
             }
             (KeyCode::Char('p'), _) => self.overlay = Overlay::Prune,
             (KeyCode::Char('T'), _) => self.cycle_theme(),
+            (KeyCode::Char('y'), _) => self.toggle_mouse_capture(),
             (KeyCode::Char('?'), _) => self.overlay = Overlay::Help,
             (KeyCode::Char(':'), _) => {
                 self.palette_query.clear();
@@ -893,6 +916,7 @@ impl App {
             UiAction::Defer => self.defer_selected(),
             UiAction::OpenPrune => self.overlay = Overlay::Prune,
             UiAction::CycleTheme => self.cycle_theme(),
+            UiAction::ToggleMouse => self.toggle_mouse_capture(),
             UiAction::Help => self.overlay = Overlay::Help,
             UiAction::OpenPalette => {
                 self.palette_query.clear();
@@ -966,6 +990,21 @@ impl App {
         self.status_message = format!("theme: {next}");
     }
 
+    /// Toggle mouse capture. With capture off, the terminal handles the mouse so
+    /// you can drag-select and copy the screen (e.g. to grab an error for a report).
+    fn toggle_mouse_capture(&mut self) {
+        self.mouse_enabled = !self.mouse_enabled;
+        let mut out = io::stdout();
+        if self.mouse_enabled {
+            let _ = execute!(out, EnableMouseCapture);
+            self.status_message = "mouse mode on — clicks control the UI".to_string();
+        } else {
+            let _ = execute!(out, DisableMouseCapture);
+            self.status_message =
+                "SELECT MODE — drag to select/copy · press y to re-enable clicks".to_string();
+        }
+    }
+
     fn spawn_reload(&self) {
         let client = self.client.clone();
         let tx = self.tx.clone();
@@ -1000,40 +1039,44 @@ impl App {
     }
 
     fn check_selected_update(&mut self) {
-        if let Some(image) = self.selected_image_ref() {
+        if let Some((local, registry)) = self.selected_check_target() {
             self.updates
-                .insert(image.clone(), UpdateInfo::from_status(UpdateStatus::Checking));
-            self.spawn_update_check(image);
+                .insert(registry.clone(), UpdateInfo::from_status(UpdateStatus::Checking));
+            self.spawn_update_check(local, registry);
         }
     }
 
     fn check_all_updates(&mut self) {
-        let refs: Vec<String> = match self.tab {
+        let targets: Vec<(String, String)> = match self.tab {
             Tab::Images => self
                 .images
                 .iter()
-                .filter_map(|i| i.primary_reference())
+                .filter_map(|i| i.primary_reference().map(|r| (i.id.clone(), r)))
                 .collect(),
-            Tab::Containers => self.containers.iter().map(|c| c.image.clone()).collect(),
+            Tab::Containers => self
+                .containers
+                .iter()
+                .map(|c| (c.image_id.clone(), c.image.clone()))
+                .collect(),
             Tab::Space => return,
         };
-        self.status_message = format!("Checking {} images…", refs.len());
-        for image in refs {
-            if self.state.is_deferred(&image) {
+        self.status_message = format!("Checking {} images…", targets.len());
+        for (local, registry) in targets {
+            if self.state.is_deferred(&registry) {
                 continue;
             }
             self.updates
-                .insert(image.clone(), UpdateInfo::from_status(UpdateStatus::Checking));
-            self.spawn_update_check(image);
+                .insert(registry.clone(), UpdateInfo::from_status(UpdateStatus::Checking));
+            self.spawn_update_check(local, registry);
         }
     }
 
-    fn spawn_update_check(&self, image: String) {
+    fn spawn_update_check(&self, local: String, registry: String) {
         let client = self.client.clone();
         let tx = self.tx.clone();
         tokio::spawn(async move {
-            let info = client.check_update_detailed(&image).await;
-            let _ = tx.send(AppEvent::UpdateResult(image, info));
+            let info = client.check_update_detailed(&local, &registry).await;
+            let _ = tx.send(AppEvent::UpdateResult(registry, info));
         });
     }
 

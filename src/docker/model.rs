@@ -92,8 +92,11 @@ pub struct ContainerInfo {
     pub id: String,
     /// Name without the leading `/`.
     pub name: String,
-    /// The image reference the container was created from.
+    /// The registry reference the container was created from (e.g. `nginx:latest`),
+    /// resolved from the container config if `docker ps` only reported an image id.
     pub image: String,
+    /// The id (`sha256:...`) of the image the container is actually running.
+    pub image_id: String,
     /// e.g. `running`, `exited`.
     pub state: String,
     /// Human status line, e.g. `Up 3 hours`.
