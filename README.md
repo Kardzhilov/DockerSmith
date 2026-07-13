@@ -60,7 +60,7 @@ cargo build --release
 ./target/release/dockersmith
 ```
 
-Prebuilt binaries for Linux and macOS (x86_64 and arm64) are attached to each
+Prebuilt binaries for Linux (x86_64 and arm64) are attached to each
 [GitHub release](https://github.com/Kardzhilov/DockerSmith/releases). `dockersmith
 self-update` fetches the latest one automatically.
 
@@ -74,7 +74,7 @@ Releases are cut automatically by GitHub Actions on every push to `main`:
   `MAJOR`.
 - Add `[skip release]` to a commit message to skip publishing a release.
 
-Each release builds and attaches binaries for `x86_64`/`aarch64` Linux and macOS.
+Each release builds and attaches binaries for `x86_64` and `aarch64` Linux.
 
 ## Usage
 
