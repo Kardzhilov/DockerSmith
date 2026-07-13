@@ -34,8 +34,11 @@ Docker socket (no shelling out to the `docker` CLI).
   any image with an `org.opencontainers.image.source` label, rendered as formatted
   **Markdown** (headings, lists, code, links).
 - **Defer / ignore** (`d`) — silence an update you don't want for 30 days.
-- **Opt-in apply** (`a`) — pull and recreate a container in-app (disabled by
-  default; enable with `apply_mode = "apply"`).
+- **Apply updates** (`a`) — on the Containers tab, press `a` (or use the footer /
+  command palette) to pull the new image and **recreate the container** in place,
+  preserving its volumes, ports, environment, restart policy, and networks. A
+  confirmation is always required, and the previous container is restored
+  automatically if the new one fails to start.
 - **Command palette** (`:` or `Ctrl-P`) — fuzzy-search every action.
 - **Scheduled checks + notifications** — periodic background update checks that push
   to an ntfy topic or webhook.
@@ -62,6 +65,7 @@ dockersmith                 # launch the full-screen TUI
 dockersmith check           # headless: list containers with available updates
 dockersmith check --host nas
 dockersmith space           # headless: reclaimable disk usage (docker system df)
+dockersmith apply <name>    # headless: update a container (pull + recreate)
 dockersmith doctor          # verify daemon connectivity
 dockersmith self-update     # update the binary to the latest release
 ```
@@ -75,7 +79,7 @@ dockersmith self-update     # update the binary to the latest release
 | `r` | refresh |
 | `u` / `U` | check update (selected / all) |
 | `⏎` | update details (current→latest version/date + changelog) |
-| `a` | apply update (opt-in) |
+| `a` | apply update (pull + recreate container) |
 | `s` · `R` · `x` | start/stop · restart · remove container |
 | `L` · `w` | logs · changelog |
 | `d` | defer update 30 days |
@@ -92,7 +96,6 @@ Config lives at `~/.config/dockersmith/config.toml` (created on first run):
 
 ```toml
 theme = "midnight"          # midnight | solar | gruvbox | mono
-apply_mode = "check_only"   # check_only | apply
 
 [notify]
 url = "https://ntfy.sh/my-private-topic"   # optional

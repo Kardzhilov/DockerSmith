@@ -98,10 +98,6 @@ pub struct ContainerInfo {
     pub state: String,
     /// Human status line, e.g. `Up 3 hours`.
     pub status: String,
-    /// Compose service label, if any.
-    pub compose_service: Option<String>,
-    /// Compose working directory label, if any.
-    pub compose_working_dir: Option<String>,
 }
 
 impl ContainerInfo {
@@ -113,22 +109,6 @@ impl ContainerInfo {
     /// Whether the container is currently running.
     pub fn is_running(&self) -> bool {
         self.state == "running"
-    }
-
-    /// The update command a user should run to apply an update manually.
-    pub fn update_command(&self) -> String {
-        match (&self.compose_working_dir, &self.compose_service) {
-            (Some(dir), Some(service)) if !dir.is_empty() && !service.is_empty() => {
-                format!(
-                    "cd \"{dir}\" && docker compose pull {service} && docker compose up -d {service}"
-                )
-            }
-            _ => format!(
-                "docker pull {img} && docker stop {name} && docker rm {name}  # then recreate",
-                img = self.image,
-                name = self.name
-            ),
-        }
     }
 }
 

@@ -32,6 +32,9 @@ async fn main() -> Result<()> {
         Some(Command::Space { host }) => {
             cli::run_space(cfg, host).await?;
         }
+        Some(Command::Apply { container, host }) => {
+            cli::run_apply(cfg, container, host).await?;
+        }
         Some(Command::Doctor) => {
             cli::run_doctor(cfg).await?;
         }

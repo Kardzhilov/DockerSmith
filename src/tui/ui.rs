@@ -417,7 +417,7 @@ fn draw_help(f: &mut Frame, app: &App) {
         Line::from("  r            refresh"),
         Line::from("  u / U        check update (selected / all)"),
         Line::from("  ⏎            update details (versions, dates, changelog)"),
-        Line::from("  a            apply update (opt-in; container tab)"),
+        Line::from("  a            apply update — pull + recreate container"),
         Line::from("  s            start/stop container"),
         Line::from("  R            restart container"),
         Line::from("  L            view container logs"),
@@ -548,7 +548,9 @@ fn draw_confirm(f: &mut Frame, app: &App, action: &ConfirmAction, regions: &mut 
         ConfirmAction::PruneVolumes => "Prune all unused volumes?".to_string(),
         ConfirmAction::PruneBuildCache => "Prune the build cache?".to_string(),
         ConfirmAction::PruneAll => "Prune EVERYTHING unused?".to_string(),
-        ConfirmAction::ApplyUpdate(_, image) => format!("Pull {image} and recreate container?"),
+        ConfirmAction::ApplyUpdate(_, image) => {
+            format!("Pull {image} and recreate this container?\n(preserves volumes, ports, env, and networks)")
+        }
     };
     let text = vec![
         Line::from(Span::styled(

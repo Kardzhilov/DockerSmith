@@ -25,17 +25,6 @@ pub struct HostConfig {
     pub endpoint: String,
 }
 
-/// How DockerSmith should behave when applying updates.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum ApplyMode {
-    /// Never apply; only ever show the command to run (safest, default).
-    #[default]
-    CheckOnly,
-    /// Allow in-app pull + recreate when the user explicitly triggers it.
-    Apply,
-}
-
 /// Notification settings.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct NotifyConfig {
@@ -75,10 +64,6 @@ pub struct Config {
     #[serde(default = "default_theme")]
     pub theme: String,
 
-    /// How updates are applied.
-    #[serde(default)]
-    pub apply_mode: ApplyMode,
-
     /// Remote/extra hosts.
     #[serde(default)]
     pub hosts: Vec<HostConfig>,
@@ -104,7 +89,6 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             theme: default_theme(),
-            apply_mode: ApplyMode::default(),
             hosts: Vec::new(),
             notify: NotifyConfig::default(),
             schedule: ScheduleConfig::default(),

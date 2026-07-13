@@ -29,6 +29,14 @@ pub enum Command {
         #[arg(long)]
         host: Option<String>,
     },
+    /// Apply an update to a container: pull its image and recreate it.
+    Apply {
+        /// Container name or id to update.
+        container: String,
+        /// Named host from your config (defaults to the local socket).
+        #[arg(long)]
+        host: Option<String>,
+    },
     /// Verify Docker connectivity and environment, then exit.
     Doctor,
     /// Check for a newer DockerSmith release and update the binary in place.
@@ -121,6 +129,23 @@ pub async fn run_space(cfg: Config, host: Option<String>) -> Result<()> {
     );
     println!();
     println!("Total reclaimable: {}", format_bytes(usage.total_reclaimable()));
+    Ok(())
+}
+
+/// `dockersmith apply <container>`
+pub async fn run_apply(cfg: Config, container: String, host: Option<String>) -> Result<()> {
+    let client = connect(&cfg, host).await?;
+    let containers = client.list_containers(true).await?;
+    let target = containers
+        .iter()
+        .find(|c| c.name == container || c.id.starts_with(&container))
+        .with_context(|| format!("no container named '{container}'"))?;
+
+    println!("Updating {} ({})…", target.name, target.image);
+    client
+        .apply_update(&target.id, &target.image, |line| println!("  {line}"))
+        .await?;
+    println!("Done.");
     Ok(())
 }
 

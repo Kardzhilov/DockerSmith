@@ -23,7 +23,7 @@ use ratatui::text::{Line, Span};
 use ratatui::Terminal;
 use tokio::sync::mpsc::{self, UnboundedSender};
 
-use crate::config::{ApplyMode, Config, State};
+use crate::config::{Config, State};
 use crate::docker::model::{UpdateInfo, UpdateStatus};
 use crate::docker::{ContainerInfo, ContainerStats, DiskUsage, DockerClient, ImageInfo};
 use crate::registry;
@@ -88,7 +88,7 @@ pub enum PaletteAction {
     GotoImages,
     GotoContainers,
     GotoSpace,
-    ToggleApply,
+    ApplySelected,
     Quit,
 }
 
@@ -104,7 +104,7 @@ impl PaletteAction {
             ("Go to: Images", PaletteAction::GotoImages),
             ("Go to: Containers", PaletteAction::GotoContainers),
             ("Go to: Space", PaletteAction::GotoSpace),
-            ("Toggle apply mode (check/apply)", PaletteAction::ToggleApply),
+            ("Apply update to selected container", PaletteAction::ApplySelected),
             ("Quit", PaletteAction::Quit),
         ]
     }
@@ -447,14 +447,7 @@ impl App {
             PaletteAction::GotoImages => self.set_tab(Tab::Images),
             PaletteAction::GotoContainers => self.set_tab(Tab::Containers),
             PaletteAction::GotoSpace => self.set_tab(Tab::Space),
-            PaletteAction::ToggleApply => {
-                self.config.apply_mode = match self.config.apply_mode {
-                    ApplyMode::CheckOnly => ApplyMode::Apply,
-                    ApplyMode::Apply => ApplyMode::CheckOnly,
-                };
-                let _ = self.config.save();
-                self.status_message = format!("apply mode: {:?}", self.config.apply_mode);
-            }
+            PaletteAction::ApplySelected => self.apply_selected_update(),
             PaletteAction::Quit => self.should_quit = true,
         }
     }
@@ -935,17 +928,13 @@ impl App {
 
     fn apply_selected_update(&mut self) {
         if self.tab != Tab::Containers {
-            self.status_message = "select a container to apply an update".to_string();
+            self.status_message =
+                "switch to the Containers tab to apply an update".to_string();
             return;
         }
         let Some(c) = self.containers.get(self.selected) else {
             return;
         };
-        if self.config.apply_mode != ApplyMode::Apply {
-            // Check-only mode (default): show the command to run rather than applying.
-            self.status_message = format!("run: {}", c.update_command());
-            return;
-        }
         self.overlay =
             Overlay::Confirm(ConfirmAction::ApplyUpdate(c.id.clone(), c.image.clone()));
     }
@@ -1136,22 +1125,20 @@ impl App {
                 tokio::spawn(async move {
                     let tx3 = tx2.clone();
                     let result = client
-                        .pull_image(&image, |line| {
-                            let _ = tx3.send(AppEvent::Progress(format!("pull: {line}")));
+                        .apply_update(&id, &image, |line| {
+                            let _ = tx3.send(AppEvent::Progress(line));
                         })
                         .await;
                     match result {
                         Ok(_) => {
-                            let _ = client.restart_container(&id).await;
-                            let _ = tx2.send(AppEvent::Message(format!(
-                                "pulled {image} and restarted container"
-                            )));
+                            let _ = tx2.send(AppEvent::Message(format!("updated {image}")));
                         }
                         Err(e) => {
-                            let _ = tx2.send(AppEvent::Message(format!("apply error: {e}")));
+                            let _ = tx2.send(AppEvent::Message(format!("apply failed: {e:#}")));
                         }
                     }
                 });
+                self.schedule_reload();
             }
         }
     }

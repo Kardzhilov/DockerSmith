@@ -89,26 +89,17 @@ impl DockerClient {
         let containers = self.docker.list_containers(Some(options)).await?;
         Ok(containers
             .into_iter()
-            .map(|c| {
-                let labels = c.labels.unwrap_or_default();
-                ContainerInfo {
-                    id: c.id.unwrap_or_default(),
-                    name: c
-                        .names
-                        .unwrap_or_default()
-                        .first()
-                        .map(|n| n.trim_start_matches('/').to_string())
-                        .unwrap_or_default(),
-                    image: c.image.unwrap_or_default(),
-                    state: c.state.map(|s| s.to_string()).unwrap_or_default(),
-                    status: c.status.unwrap_or_default(),
-                    compose_service: labels
-                        .get("com.docker.compose.service")
-                        .cloned(),
-                    compose_working_dir: labels
-                        .get("com.docker.compose.project.working_dir")
-                        .cloned(),
-                }
+            .map(|c| ContainerInfo {
+                id: c.id.unwrap_or_default(),
+                name: c
+                    .names
+                    .unwrap_or_default()
+                    .first()
+                    .map(|n| n.trim_start_matches('/').to_string())
+                    .unwrap_or_default(),
+                image: c.image.unwrap_or_default(),
+                state: c.state.map(|s| s.to_string()).unwrap_or_default(),
+                status: c.status.unwrap_or_default(),
             })
             .collect())
     }
@@ -376,6 +367,124 @@ impl DockerClient {
             }
         }
         Ok(())
+    }
+
+    // ── Apply update (pull + recreate) ─────────────────────────────────────
+
+    /// Update a container to the latest image by pulling it and recreating the
+    /// container with the same configuration (Watchtower pattern).
+    ///
+    /// Preserves the container's config, host config (volumes, ports, restart
+    /// policy, devices, capabilities, etc.), and network attachments. The old
+    /// container is renamed aside first and restored automatically if the new
+    /// one fails to start.
+    pub async fn apply_update<F: FnMut(String)>(
+        &self,
+        id: &str,
+        image: &str,
+        mut on_progress: F,
+    ) -> Result<()> {
+        use bollard::query_parameters::{
+            CreateContainerOptionsBuilder, InspectContainerOptions, RemoveContainerOptionsBuilder,
+            RenameContainerOptionsBuilder, StartContainerOptions, StopContainerOptions,
+        };
+
+        let inspect = self
+            .docker
+            .inspect_container(id, None::<InspectContainerOptions>)
+            .await
+            .context("inspecting container")?;
+        let name = inspect
+            .name
+            .clone()
+            .unwrap_or_default()
+            .trim_start_matches('/')
+            .to_string();
+        if name.is_empty() {
+            return Err(anyhow!("could not determine container name"));
+        }
+        let config = inspect
+            .config
+            .clone()
+            .ok_or_else(|| anyhow!("container has no config to preserve"))?;
+        let host_config = inspect.host_config.clone();
+        let networks = inspect.network_settings.and_then(|n| n.networks);
+
+        // Pull the new image first (streaming progress).
+        on_progress(format!("pulling {image}…"));
+        self.pull_image(image, |l| on_progress(l)).await?;
+
+        // Reconstruct a create body from the running config via a JSON round-trip
+        // (ContainerConfig and ContainerCreateBody share the same field names).
+        let mut body: bollard::models::ContainerCreateBody =
+            serde_json::from_value(serde_json::to_value(&config)?)
+                .context("building create spec")?;
+        body.image = Some(image.to_string());
+        body.host_config = host_config;
+        if let Some(nets) = networks {
+            body.networking_config = Some(bollard::models::NetworkingConfig {
+                endpoints_config: Some(nets),
+            });
+        }
+
+        // Rename the old container aside so it can be restored on failure.
+        let backup = format!("{name}_dockersmith_old");
+        on_progress("stopping old container…".to_string());
+        let _ = self
+            .docker
+            .stop_container(id, None::<StopContainerOptions>)
+            .await;
+        self.docker
+            .rename_container(
+                id,
+                RenameContainerOptionsBuilder::default().name(&backup).build(),
+            )
+            .await
+            .context("renaming old container")?;
+
+        on_progress("creating new container…".to_string());
+        let create_opts = CreateContainerOptionsBuilder::default().name(&name).build();
+        let recreate = async {
+            let created = self.docker.create_container(Some(create_opts), body).await?;
+            self.docker
+                .start_container(&created.id, None::<StartContainerOptions>)
+                .await?;
+            Ok::<_, anyhow::Error>(())
+        }
+        .await;
+
+        let force_remove = RemoveContainerOptionsBuilder::default().force(true).build();
+        match recreate {
+            Ok(()) => {
+                on_progress("removing old container…".to_string());
+                let _ = self
+                    .docker
+                    .remove_container(&backup, Some(force_remove))
+                    .await;
+                on_progress(format!("updated {name}"));
+                Ok(())
+            }
+            Err(e) => {
+                // Roll back: remove the failed new container and restore the old one.
+                on_progress("update failed — rolling back…".to_string());
+                let _ = self
+                    .docker
+                    .remove_container(&name, Some(force_remove))
+                    .await;
+                let _ = self
+                    .docker
+                    .rename_container(
+                        &backup,
+                        RenameContainerOptionsBuilder::default().name(&name).build(),
+                    )
+                    .await;
+                let _ = self
+                    .docker
+                    .start_container(&name, None::<StartContainerOptions>)
+                    .await;
+                Err(e.context("recreating container (rolled back)"))
+            }
+        }
     }
 }
 
