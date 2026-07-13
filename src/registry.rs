@@ -208,8 +208,11 @@ async fn get_token(
         .to_string();
     let realm = extract_directive(&header, "realm")?;
     let service = extract_directive(&header, "service").unwrap_or_default();
-    let scope = extract_directive(&header, "scope")
-        .unwrap_or_else(|| format!("repository:{repository}:pull"));
+    // Always request a token scoped to THIS repository. Some registries — notably
+    // lscr.io (LinuxServer, proxied to ghcr.io) — return a placeholder scope like
+    // `repository:user/image:pull` in the challenge, which would yield a token that
+    // 404s on the real manifest. The realm/service from the challenge are correct.
+    let scope = format!("repository:{repository}:pull");
     let url = format!("{realm}?service={service}&scope={scope}");
     request_token(client, &url).await
 }
