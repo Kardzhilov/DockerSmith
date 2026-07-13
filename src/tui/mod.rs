@@ -9,7 +9,7 @@ use std::time::Duration;
 use anyhow::Result;
 use crossterm::event::{
     DisableMouseCapture, EnableMouseCapture, Event as CEvent, EventStream, KeyCode, KeyEvent,
-    KeyEventKind, KeyModifiers,
+    KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use crossterm::execute;
 use crossterm::terminal::{
@@ -17,6 +17,7 @@ use crossterm::terminal::{
 };
 use futures_util::StreamExt;
 use ratatui::backend::CrosstermBackend;
+use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::Terminal;
@@ -121,6 +122,61 @@ pub enum ConfirmAction {
     ApplyUpdate(String, String),
 }
 
+/// A UI action triggerable by a key or a mouse click.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UiAction {
+    Refresh,
+    CheckSelected,
+    CheckAll,
+    Details,
+    Apply,
+    StartStop,
+    Restart,
+    Logs,
+    Changelog,
+    Remove,
+    Defer,
+    OpenPrune,
+    CycleTheme,
+    Help,
+    OpenPalette,
+    Quit,
+    PruneImages(bool),
+    PruneContainers,
+    PruneVolumes,
+    PruneBuildCache,
+    PruneAll,
+    ConfirmYes,
+    ConfirmNo,
+    CloseOverlay,
+    PaletteItem(usize),
+}
+
+/// What a clickable screen region maps to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClickTarget {
+    Tab(Tab),
+    Row(usize),
+    Action(UiAction),
+}
+
+/// A rectangular hit region recorded during rendering.
+#[derive(Debug, Clone, Copy)]
+pub struct ClickRegion {
+    pub rect: Rect,
+    pub target: ClickTarget,
+}
+
+impl ClickRegion {
+    /// Whether the given screen coordinate falls inside this region.
+    fn contains(&self, x: u16, y: u16) -> bool {
+        x >= self.rect.x
+            && x < self.rect.x + self.rect.width
+            && y >= self.rect.y
+            && y < self.rect.y + self.rect.height
+    }
+}
+
 /// Messages delivered to the main loop from background tasks and input.
 enum AppEvent {
     Input(CEvent),
@@ -181,6 +237,9 @@ pub struct App {
     palette_query: String,
     palette_index: usize,
 
+    /// Clickable regions recorded during the last render.
+    regions: Vec<ClickRegion>,
+
     tx: UnboundedSender<AppEvent>,
 }
 
@@ -214,6 +273,7 @@ pub async fn run(config: Config) -> Result<()> {
         should_quit: false,
         palette_query: String::new(),
         palette_index: 0,
+        regions: Vec::new(),
         config,
         tx: tx.clone(),
     };
@@ -286,9 +346,11 @@ pub async fn run(config: Config) -> Result<()> {
         if app.should_quit {
             break Ok(());
         }
-        if let Err(e) = terminal.draw(|f| ui::draw(f, &app)) {
+        let mut regions: Vec<ClickRegion> = Vec::new();
+        if let Err(e) = terminal.draw(|f| ui::draw(f, &app, &mut regions)) {
             break Err(e.into());
         }
+        app.regions = regions;
         match rx.recv().await {
             Some(event) => {
                 if let Err(e) = app.handle_event(event).await {
@@ -422,6 +484,7 @@ impl App {
     async fn handle_event(&mut self, event: AppEvent) -> Result<()> {
         match event {
             AppEvent::Input(CEvent::Key(key)) => self.handle_key(key).await?,
+            AppEvent::Input(CEvent::Mouse(mouse)) => self.handle_mouse(mouse),
             AppEvent::Input(_) => {}
             AppEvent::Tick => {
                 // Refresh stats for visible running containers on the Containers tab.
@@ -642,6 +705,128 @@ impl App {
             Overlay::None => {}
         }
         Ok(())
+    }
+
+    // ── Mouse ──────────────────────────────────────────────────────────────
+    fn handle_mouse(&mut self, mouse: MouseEvent) {
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                let hit = self
+                    .regions
+                    .iter()
+                    .rev()
+                    .find(|r| r.contains(mouse.column, mouse.row))
+                    .map(|r| r.target);
+                match hit {
+                    Some(ClickTarget::Tab(tab)) => self.set_tab(tab),
+                    Some(ClickTarget::Row(i)) => self.click_row(i),
+                    Some(ClickTarget::Action(a)) => self.run_ui_action(a),
+                    None => {
+                        // A click outside every hit region dismisses a dismissable
+                        // overlay (confirmations must be answered explicitly).
+                        if self.overlay != Overlay::None
+                            && !matches!(self.overlay, Overlay::Confirm(_))
+                        {
+                            self.overlay = Overlay::None;
+                            self.overlay_view.clear();
+                        }
+                    }
+                }
+            }
+            MouseEventKind::ScrollDown => {
+                if self.overlay_is_scrollable() {
+                    self.overlay_scroll = self
+                        .overlay_scroll
+                        .saturating_add(1)
+                        .min(self.overlay_view.len().saturating_sub(1));
+                } else if self.overlay == Overlay::None {
+                    self.move_selection(1);
+                }
+            }
+            MouseEventKind::ScrollUp => {
+                if self.overlay_is_scrollable() {
+                    self.overlay_scroll = self.overlay_scroll.saturating_sub(1);
+                } else if self.overlay == Overlay::None {
+                    self.move_selection(-1);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn overlay_is_scrollable(&self) -> bool {
+        matches!(self.overlay, Overlay::Logs | Overlay::Changelog | Overlay::Help)
+    }
+
+    /// Clicking a row selects it; clicking the already-selected row opens details.
+    fn click_row(&mut self, i: usize) {
+        if self.tab == Tab::Space {
+            return;
+        }
+        if self.selected == i {
+            self.overlay = Overlay::UpdateDetails;
+        } else {
+            self.selected = i;
+        }
+    }
+
+    /// Run a UI action originating from a key binding or a mouse click.
+    fn run_ui_action(&mut self, action: UiAction) {
+        match action {
+            UiAction::Refresh => {
+                self.status_message = "Refreshing…".to_string();
+                self.spawn_reload();
+            }
+            UiAction::CheckSelected => self.check_selected_update(),
+            UiAction::CheckAll => self.check_all_updates(),
+            UiAction::Details => self.overlay = Overlay::UpdateDetails,
+            UiAction::Apply => self.apply_selected_update(),
+            UiAction::StartStop => self.toggle_start_stop(),
+            UiAction::Restart => self.restart_selected(),
+            UiAction::Logs => self.open_logs(),
+            UiAction::Changelog => self.open_changelog(),
+            UiAction::Remove => self.confirm_remove_selected(),
+            UiAction::Defer => self.defer_selected(),
+            UiAction::OpenPrune => self.overlay = Overlay::Prune,
+            UiAction::CycleTheme => self.cycle_theme(),
+            UiAction::Help => self.overlay = Overlay::Help,
+            UiAction::OpenPalette => {
+                self.palette_query.clear();
+                self.palette_index = 0;
+                self.overlay = Overlay::Palette;
+            }
+            UiAction::Quit => self.should_quit = true,
+            UiAction::PruneImages(all) => {
+                self.overlay = Overlay::Confirm(ConfirmAction::PruneImages(all))
+            }
+            UiAction::PruneContainers => {
+                self.overlay = Overlay::Confirm(ConfirmAction::PruneContainers)
+            }
+            UiAction::PruneVolumes => {
+                self.overlay = Overlay::Confirm(ConfirmAction::PruneVolumes)
+            }
+            UiAction::PruneBuildCache => {
+                self.overlay = Overlay::Confirm(ConfirmAction::PruneBuildCache)
+            }
+            UiAction::PruneAll => self.overlay = Overlay::Confirm(ConfirmAction::PruneAll),
+            UiAction::ConfirmYes => {
+                if let Overlay::Confirm(action) = self.overlay.clone() {
+                    self.overlay = Overlay::None;
+                    self.run_confirmed(action);
+                }
+            }
+            UiAction::ConfirmNo => self.overlay = Overlay::None,
+            UiAction::CloseOverlay => {
+                self.overlay = Overlay::None;
+                self.overlay_view.clear();
+            }
+            UiAction::PaletteItem(i) => {
+                if let Some((_, act)) = self.palette_matches().get(i).copied() {
+                    self.overlay = Overlay::None;
+                    self.run_palette_action(act);
+                }
+            }
+        }
     }
 
     // ── Actions ────────────────────────────────────────────────────────────

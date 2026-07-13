@@ -42,6 +42,9 @@ Docker socket (no shelling out to the `docker` CLI).
 - **Multi-host** — manage remote daemons over `unix://`, `tcp://`, or `ssh://`.
 - **Self-update** — `dockersmith self-update` swaps in the latest release binary.
 - **Themes** (`T`) — midnight, solar, gruvbox, mono.
+- **Mouse-driven** — everything is clickable: tabs, list rows (click to select, click
+  again for details), footer shortcuts, the prune menu, command palette, and
+  confirmation buttons. The scroll wheel moves the selection and scrolls overlays.
 
 ## Install
 
@@ -79,6 +82,9 @@ dockersmith self-update     # update the binary to the latest release
 | `p` | prune menu |
 | `:` / `Ctrl-P` | command palette |
 | `T` · `?` · `q` | theme · help · quit |
+
+Everything is also **mouse-clickable** — tabs, rows, the footer shortcuts, and every
+pop-up menu — and the scroll wheel navigates lists and overlays.
 
 ## Configuration
 

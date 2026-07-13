@@ -8,12 +8,25 @@ use ratatui::widgets::{
 };
 use ratatui::Frame;
 
-use super::{App, ConfirmAction, Overlay, Tab};
+use super::{App, ClickRegion, ClickTarget, ConfirmAction, Overlay, Tab, UiAction};
 use crate::docker::model::{UpdateInfo, UpdateStatus};
 use crate::util::format_bytes;
 
+/// Record a clickable region.
+fn push_region(regions: &mut Vec<ClickRegion>, x: u16, y: u16, width: u16, target: ClickTarget) {
+    regions.push(ClickRegion {
+        rect: Rect {
+            x,
+            y,
+            width,
+            height: 1,
+        },
+        target,
+    });
+}
+
 /// Top-level draw entry point.
-pub fn draw(f: &mut Frame, app: &App) {
+pub fn draw(f: &mut Frame, app: &App, regions: &mut Vec<ClickRegion>) {
     let theme = app.theme();
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -24,28 +37,31 @@ pub fn draw(f: &mut Frame, app: &App) {
         ])
         .split(f.area());
 
-    draw_tabs(f, app, chunks[0]);
+    // Base regions (tabs/rows/footer) are only clickable when no overlay is open.
+    let base = matches!(app.overlay(), Overlay::None);
+
+    draw_tabs(f, app, chunks[0], regions);
     match app.tab() {
-        Tab::Images => draw_images(f, app, chunks[1]),
-        Tab::Containers => draw_containers(f, app, chunks[1]),
+        Tab::Images => draw_images(f, app, chunks[1], regions, base),
+        Tab::Containers => draw_containers(f, app, chunks[1], regions, base),
         Tab::Space => draw_space(f, app, chunks[1]),
     }
-    draw_footer(f, app, chunks[2]);
+    draw_footer(f, app, chunks[2], regions, base);
 
     match app.overlay() {
         Overlay::None => {}
         Overlay::Help => draw_help(f, app),
-        Overlay::Prune => draw_prune_menu(f, app),
-        Overlay::Palette => draw_palette(f, app),
-        Overlay::UpdateDetails => draw_update_details(f, app),
-        Overlay::Confirm(action) => draw_confirm(f, app, action),
+        Overlay::Prune => draw_prune_menu(f, app, regions),
+        Overlay::Palette => draw_palette(f, app, regions),
+        Overlay::UpdateDetails => draw_update_details(f, app, regions),
+        Overlay::Confirm(action) => draw_confirm(f, app, action, regions),
         Overlay::Logs | Overlay::Changelog => draw_scroll_overlay(f, app),
     }
 
     let _ = theme;
 }
 
-fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
+fn draw_tabs(f: &mut Frame, app: &App, area: Rect, regions: &mut Vec<ClickRegion>) {
     let theme = app.theme();
     let titles: Vec<Line> = Tab::ALL
         .iter()
@@ -69,9 +85,19 @@ fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
                 .add_modifier(Modifier::BOLD),
         );
     f.render_widget(tabs, area);
+
+    // Record a click region per tab. Titles render inside the border as
+    // ` Title ` separated by the default divider ` | `.
+    let mut x = area.x + 1; // inside the left border
+    let y = area.y + 1; // the content row
+    for t in Tab::ALL {
+        let width = t.title().chars().count() as u16 + 2; // ` Title `
+        push_region(regions, x, y, width, ClickTarget::Tab(t));
+        x += width + 3; // account for the ` | ` divider between tabs
+    }
 }
 
-fn draw_images(f: &mut Frame, app: &App, area: Rect) {
+fn draw_images(f: &mut Frame, app: &App, area: Rect, regions: &mut Vec<ClickRegion>, base: bool) {
     let theme = app.theme();
     let header = Row::new(vec!["IMAGE", "VERSION", "DATE", "SOURCE", "SIZE", "UPDATE"])
         .style(Style::default().fg(theme.secondary).add_modifier(Modifier::BOLD));
@@ -120,9 +146,10 @@ fn draw_images(f: &mut Frame, app: &App, area: Rect) {
     .header(header)
     .block(list_block(theme, &format!(" Images ({}) ", app.images().len())));
     f.render_widget(table, area);
+    record_rows(regions, area, app.images().len(), base);
 }
 
-fn draw_containers(f: &mut Frame, app: &App, area: Rect) {
+fn draw_containers(f: &mut Frame, app: &App, area: Rect, regions: &mut Vec<ClickRegion>, base: bool) {
     let theme = app.theme();
     let header = Row::new(vec!["NAME", "IMAGE", "STATE", "CPU%", "MEM", "UPDATE"])
         .style(Style::default().fg(theme.secondary).add_modifier(Modifier::BOLD));
@@ -179,6 +206,27 @@ fn draw_containers(f: &mut Frame, app: &App, area: Rect) {
         &format!(" Containers ({}) ", app.containers().len()),
     ));
     f.render_widget(table, area);
+    record_rows(regions, area, app.containers().len(), base);
+}
+
+/// Record a clickable region for each visible table row.
+fn record_rows(regions: &mut Vec<ClickRegion>, area: Rect, count: usize, base: bool) {
+    if !base {
+        return;
+    }
+    // Inside the block border, a header row occupies the first line; data rows
+    // follow. Visible data height = area height minus top border, header, bottom border.
+    let visible = area.height.saturating_sub(3) as usize;
+    let width = area.width.saturating_sub(2);
+    for i in 0..count.min(visible) {
+        push_region(
+            regions,
+            area.x + 1,
+            area.y + 2 + i as u16,
+            width,
+            ClickTarget::Row(i),
+        );
+    }
 }
 
 fn draw_space(f: &mut Frame, app: &App, area: Rect) {
@@ -286,7 +334,7 @@ fn draw_space(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(summary, split[1]);
 }
 
-fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
+fn draw_footer(f: &mut Frame, app: &App, area: Rect, regions: &mut Vec<ClickRegion>, base: bool) {
     let theme = app.theme();
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -299,15 +347,59 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
     ]));
     f.render_widget(status, chunks[0]);
 
-    let keys = match app.tab() {
-        Tab::Containers => {
-            "q quit · : palette · ⇥ tab · u/U check · ⏎ details · a apply · s start/stop · R restart · L logs · w changelog · x rm · d defer · p prune · ? help"
+    // Build clickable shortcut segments for the active tab.
+    let mut segments: Vec<(&str, UiAction)> = vec![
+        ("q quit", UiAction::Quit),
+        (": palette", UiAction::OpenPalette),
+        ("u check", UiAction::CheckSelected),
+        ("U all", UiAction::CheckAll),
+        ("⏎ details", UiAction::Details),
+    ];
+    match app.tab() {
+        Tab::Containers => segments.extend([
+            ("a apply", UiAction::Apply),
+            ("s start/stop", UiAction::StartStop),
+            ("R restart", UiAction::Restart),
+            ("L logs", UiAction::Logs),
+            ("w changelog", UiAction::Changelog),
+            ("x rm", UiAction::Remove),
+            ("d defer", UiAction::Defer),
+            ("p prune", UiAction::OpenPrune),
+        ]),
+        Tab::Images => segments.extend([
+            ("w changelog", UiAction::Changelog),
+            ("d defer", UiAction::Defer),
+            ("p prune", UiAction::OpenPrune),
+        ]),
+        Tab::Space => segments.extend([
+            ("p prune", UiAction::OpenPrune),
+            ("r refresh", UiAction::Refresh),
+        ]),
+    }
+    segments.push(("T theme", UiAction::CycleTheme));
+    segments.push(("? help", UiAction::Help));
+
+    let sep = " · ";
+    let mut spans: Vec<Span> = Vec::new();
+    let mut x = chunks[1].x;
+    let y = chunks[1].y;
+    let max_x = chunks[1].x + chunks[1].width;
+    for (idx, (label, action)) in segments.iter().enumerate() {
+        if idx > 0 {
+            spans.push(Span::styled(sep, Style::default().fg(theme.border)));
+            x += sep.chars().count() as u16;
         }
-        Tab::Images => "q quit · : palette · ⇥ tab · u/U check · ⏎ details · w changelog · d defer · p prune · T theme · ? help",
-        Tab::Space => "q quit · : palette · ⇥ tab · p prune · r refresh · T theme · ? help",
-    };
-    let help = Paragraph::new(Span::styled(keys, Style::default().fg(theme.dim)));
-    f.render_widget(help, chunks[1]);
+        let width = label.chars().count() as u16;
+        if x + width > max_x {
+            break; // ran out of horizontal room
+        }
+        spans.push(Span::styled(*label, Style::default().fg(theme.dim)));
+        if base {
+            push_region(regions, x, y, width, ClickTarget::Action(*action));
+        }
+        x += width;
+    }
+    f.render_widget(Paragraph::new(Line::from(spans)), chunks[1]);
 }
 
 // ── Overlays ───────────────────────────────────────────────────────────────
@@ -344,36 +436,59 @@ fn draw_help(f: &mut Frame, app: &App) {
     f.render_widget(p, area);
 }
 
-fn draw_prune_menu(f: &mut Frame, app: &App) {
+fn draw_prune_menu(f: &mut Frame, app: &App, regions: &mut Vec<ClickRegion>) {
     let theme = app.theme();
     let reclaimable = app
         .usage()
         .map(|u| format_bytes(u.total_reclaimable()))
         .unwrap_or_else(|| "?".to_string());
-    let text = vec![
+    // (label, action) for each selectable prune option, in display order.
+    let options = [
+        ("  i   dangling images", UiAction::PruneImages(false)),
+        ("  I   ALL unused images", UiAction::PruneImages(true)),
+        ("  c   stopped containers", UiAction::PruneContainers),
+        ("  v   unused volumes", UiAction::PruneVolumes),
+        ("  b   build cache", UiAction::PruneBuildCache),
+        ("  a   everything unused", UiAction::PruneAll),
+    ];
+    let mut text = vec![
         Line::from(Span::styled(
             format!("Prune — up to {reclaimable} reclaimable"),
             Style::default().fg(theme.warn).add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
-        Line::from("  i   dangling images"),
-        Line::from("  I   ALL unused images"),
-        Line::from("  c   stopped containers"),
-        Line::from("  v   unused volumes"),
-        Line::from("  b   build cache"),
-        Line::from("  a   everything unused"),
-        Line::from(""),
-        Line::from(Span::styled("  Esc  cancel", Style::default().fg(theme.dim))),
     ];
+    for (label, _) in &options {
+        text.push(Line::from(*label));
+    }
+    text.push(Line::from(""));
+    text.push(Line::from(Span::styled(
+        "  Esc  cancel",
+        Style::default().fg(theme.dim),
+    )));
+
     let area = centered_rect(50, 45, f.area());
     f.render_widget(Clear, area);
     f.render_widget(
         Paragraph::new(text).block(overlay_block(theme, " Prune ")),
         area,
     );
+
+    // Options begin after the title + blank line, inside the top border.
+    let first_y = area.y + 1 + 2;
+    let width = area.width.saturating_sub(2);
+    for (i, (_, action)) in options.iter().enumerate() {
+        push_region(
+            regions,
+            area.x + 1,
+            first_y + i as u16,
+            width,
+            ClickTarget::Action(*action),
+        );
+    }
 }
 
-fn draw_palette(f: &mut Frame, app: &App) {
+fn draw_palette(f: &mut Frame, app: &App, regions: &mut Vec<ClickRegion>) {
     let theme = app.theme();
     let matches = app.palette_matches();
     let mut lines: Vec<Line> = Vec::new();
@@ -408,9 +523,22 @@ fn draw_palette(f: &mut Frame, app: &App) {
         Paragraph::new(lines).block(overlay_block(theme, " Command palette ")),
         area,
     );
+
+    // The list starts after the query line + blank line, inside the top border.
+    let first_y = area.y + 1 + 2;
+    let width = area.width.saturating_sub(2);
+    for i in 0..matches.len() {
+        push_region(
+            regions,
+            area.x + 1,
+            first_y + i as u16,
+            width,
+            ClickTarget::Action(UiAction::PaletteItem(i)),
+        );
+    }
 }
 
-fn draw_confirm(f: &mut Frame, app: &App, action: &ConfirmAction) {
+fn draw_confirm(f: &mut Frame, app: &App, action: &ConfirmAction, regions: &mut Vec<ClickRegion>) {
     let theme = app.theme();
     let desc = match action {
         ConfirmAction::RemoveContainer(_, name) => format!("Remove container '{name}'?"),
@@ -428,10 +556,17 @@ fn draw_confirm(f: &mut Frame, app: &App, action: &ConfirmAction) {
             Style::default().fg(theme.fg).add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
-        Line::from(Span::styled(
-            "  y confirm      n cancel",
-            Style::default().fg(theme.dim),
-        )),
+        Line::from(vec![
+            Span::styled(
+                "[ Yes ]",
+                Style::default().fg(theme.ok).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("      "),
+            Span::styled(
+                "[ No ]",
+                Style::default().fg(theme.err).add_modifier(Modifier::BOLD),
+            ),
+        ]),
     ];
     let area = centered_rect(56, 22, f.area());
     f.render_widget(Clear, area);
@@ -441,6 +576,12 @@ fn draw_confirm(f: &mut Frame, app: &App, action: &ConfirmAction) {
             .block(overlay_block(theme, " Confirm ")),
         area,
     );
+
+    // Clickable Yes/No buttons on the centered button row (3rd content line).
+    let btn_y = area.y + 1 + 2;
+    let center = area.x + area.width / 2;
+    push_region(regions, center.saturating_sub(10), btn_y, 7, ClickTarget::Action(UiAction::ConfirmYes));
+    push_region(regions, center + 3, btn_y, 6, ClickTarget::Action(UiAction::ConfirmNo));
 }
 
 fn draw_scroll_overlay(f: &mut Frame, app: &App) {
@@ -526,7 +667,7 @@ fn update_cell(theme: &crate::theme::Theme, info: Option<&UpdateInfo>) -> Line<'
 }
 
 /// The update-details overlay: current vs latest version/date plus changelog link.
-fn draw_update_details(f: &mut Frame, app: &App) {
+fn draw_update_details(f: &mut Frame, app: &App, regions: &mut Vec<ClickRegion>) {
     let theme = app.theme();
     let area = centered_rect(66, 55, f.area());
     f.render_widget(Clear, area);
@@ -633,12 +774,19 @@ fn draw_update_details(f: &mut Frame, app: &App) {
         Style::default().fg(theme.dim),
     )));
 
+    let footer_row = area.y + 1 + (lines.len() as u16).saturating_sub(1);
     f.render_widget(
         Paragraph::new(lines)
             .block(overlay_block(theme, " Update details "))
             .wrap(Wrap { trim: false }),
         area,
     );
+
+    // Clickable action words on the footer row: "  u recheck · w changelog · Esc close".
+    let base_x = area.x + 1;
+    push_region(regions, base_x + 2, footer_row, 9, ClickTarget::Action(UiAction::CheckSelected));
+    push_region(regions, base_x + 14, footer_row, 11, ClickTarget::Action(UiAction::Changelog));
+    push_region(regions, base_x + 28, footer_row, 9, ClickTarget::Action(UiAction::CloseOverlay));
 }
 
 
