@@ -1,13 +1,43 @@
-# DockerSmith
+<div align="center">
 
-A full-screen terminal UI suite for Docker — inspect images and containers, check
-for updates without pulling, and reclaim disk space, all from your keyboard.
+# 🐳 DockerSmith
+
+**A full-screen terminal UI suite for Docker** — browse images and containers,
+check for updates without pulling, apply them safely, and reclaim disk space —
+all from your keyboard *and* mouse.
+
+[![Release](https://img.shields.io/github/v/release/Kardzhilov/DockerSmith?color=7aa2f7&label=release)](https://github.com/Kardzhilov/DockerSmith/releases)
+[![CI](https://github.com/Kardzhilov/DockerSmith/actions/workflows/release.yml/badge.svg)](https://github.com/Kardzhilov/DockerSmith/actions/workflows/release.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-9ece6a)](#license)
+![Platform: Linux](https://img.shields.io/badge/platform-linux-565f89)
+![Built with Rust](https://img.shields.io/badge/built%20with-Rust-e0af68?logo=rust&logoColor=white)
+
+<img src="docs/screenshots/images.svg" alt="DockerSmith — Images view" width="840">
+
+</div>
 
 Built in Rust with [ratatui](https://ratatui.rs) and the
-[bollard](https://docs.rs/bollard) Docker Engine API client. Talks directly to the
-Docker socket (no shelling out to the `docker` CLI).
+[bollard](https://docs.rs/bollard) Docker Engine API client — it talks directly to
+the Docker socket, with no shelling out to the `docker` CLI.
 
-## Features
+> [!NOTE]
+> The data in every screenshot below is fictional — none of it comes from a real host.
+
+## 📸 Screenshots
+
+**Containers** — live CPU/memory and per-container update status:
+
+<img src="docs/screenshots/containers.svg" alt="DockerSmith — Containers view" width="840">
+
+**Space** — reclaimable disk usage, mirroring `docker system df`:
+
+<img src="docs/screenshots/space.svg" alt="DockerSmith — Space view" width="840">
+
+**Applying an update** — a live, step-by-step recreate with rollback on failure:
+
+<img src="docs/screenshots/apply.svg" alt="DockerSmith — Apply update progress" width="840">
+
+## ✨ Features
 
 **Core**
 
@@ -51,7 +81,7 @@ Docker socket (no shelling out to the `docker` CLI).
   again for details), footer shortcuts, the prune menu, command palette, and
   confirmation buttons. The scroll wheel moves the selection and scrolls overlays.
 
-## Install
+## 📦 Install
 
 ### Quick install (recommended)
 
@@ -88,7 +118,7 @@ cargo build --release
 Prebuilt binaries for Linux (x86_64 and arm64) are attached to each
 [GitHub release](https://github.com/Kardzhilov/DockerSmith/releases).
 
-## Releasing
+## 🏷️ Releasing
 
 Releases are cut automatically by GitHub Actions on every push to `main`:
 
@@ -100,7 +130,7 @@ Releases are cut automatically by GitHub Actions on every push to `main`:
 
 Each release builds and attaches binaries for `x86_64` and `aarch64` Linux.
 
-## Usage
+## 🚀 Usage
 
 ```sh
 dockersmith                 # launch the full-screen TUI
@@ -132,7 +162,7 @@ dockersmith self-update     # update the binary to the latest release
 Everything is also **mouse-clickable** — tabs, rows, the footer shortcuts, and every
 pop-up menu — and the scroll wheel navigates lists and overlays.
 
-## Configuration
+## ⚙️ Configuration
 
 Config lives at `~/.config/dockersmith/config.toml` (created on first run):
 
@@ -156,7 +186,7 @@ Runtime state (deferred updates, changelog source overrides, and remembered upda
 check results) is stored separately in `~/.config/dockersmith/state.json`. Cached
 results are automatically invalidated when the underlying local image changes.
 
-## How update checking works
+## 🔍 How update checking works
 
 For each image, DockerSmith reads the local `RepoDigest` and asks the registry for
 the current manifest descriptor digest (`inspect_registry_image`, the Engine API's
@@ -170,6 +200,6 @@ image **config blobs** (a few KB each, still no layers) to extract the version l
 show `current → latest`. When no version label is published, it falls back to the
 image creation dates.
 
-## License
+## 📄 License
 
 MIT

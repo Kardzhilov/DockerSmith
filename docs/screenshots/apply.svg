@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 940 400" font-family="'JetBrains Mono','Fira Code',ui-monospace,'Cascadia Code',monospace" font-size="15">
+  <rect x="1" y="1" width="938" height="398" rx="12" fill="#16161e" stroke="#2a2e42"/>
+  <circle cx="26" cy="26" r="6" fill="#f7768e"/>
+  <circle cx="46" cy="26" r="6" fill="#e0af68"/>
+  <circle cx="66" cy="26" r="6" fill="#9ece6a"/>
+  <text x="470" y="31" fill="#565f89" text-anchor="middle">DockerSmith 1.2.0</text>
+
+  <!-- dimmed background hint of the containers tab -->
+  <text x="34" y="66" fill="#2f344d">Images</text>
+  <text x="126" y="66" fill="#2f344d">Containers</text>
+  <text x="238" y="66" fill="#2f344d">Space</text>
+
+  <!-- overlay panel -->
+  <rect x="150" y="70" width="640" height="292" rx="10" fill="#1a1b26" stroke="#7aa2f7"/>
+  <text x="170" y="96" fill="#7aa2f7" font-weight="bold">Applying update</text>
+
+  <text x="172" y="128" fill="#7aa2f7" font-weight="bold">Updating grafana/grafana:11.5.1</text>
+
+  <!-- checklist -->
+  <text x="180" y="160" fill="#9ece6a">✔</text>
+  <text x="212" y="160" fill="#c0caf5">Inspect container</text>
+  <text x="180" y="184" fill="#9ece6a">✔</text>
+  <text x="212" y="184" fill="#c0caf5">Pull new image</text>
+  <text x="180" y="208" fill="#9ece6a">✔</text>
+  <text x="212" y="208" fill="#c0caf5">Stop old container</text>
+  <text x="180" y="232" fill="#9ece6a">✔</text>
+  <text x="212" y="232" fill="#c0caf5">Set old container aside</text>
+  <text x="180" y="256" fill="#7aa2f7">◐</text>
+  <text x="212" y="256" fill="#c0caf5">Create new container</text>
+  <text x="180" y="280" fill="#565f89">○</text>
+  <text x="212" y="280" fill="#565f89">Start new container</text>
+  <text x="180" y="304" fill="#565f89">○</text>
+  <text x="212" y="304" fill="#565f89">Remove old container</text>
+
+  <!-- recent output -->
+  <text x="500" y="160" fill="#9ece6a">recent output</text>
+  <text x="500" y="184" fill="#565f89">Pulling from grafana/grafana</text>
+  <text x="500" y="204" fill="#565f89">a1b2c3: Pull complete</text>
+  <text x="500" y="224" fill="#565f89">d4e5f6: Pull complete</text>
+  <text x="500" y="244" fill="#565f89">Digest: sha256:9f2a…c71b</text>
+  <text x="500" y="264" fill="#565f89">Status: Downloaded newer image</text>
+
+  <text x="172" y="340" fill="#7aa2f7">working…</text>
+
+  <line x1="20" y1="372" x2="920" y2="372" stroke="#2a2e42"/>
+  <text x="24" y="392" fill="#565f89">Pull the new image and recreate the container — preserving volumes, ports, env, and networks.</text>
+</svg>

@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 940 360" font-family="'JetBrains Mono','Fira Code',ui-monospace,'Cascadia Code',monospace" font-size="15">
+  <rect x="1" y="1" width="938" height="358" rx="12" fill="#16161e" stroke="#2a2e42"/>
+  <circle cx="26" cy="26" r="6" fill="#f7768e"/>
+  <circle cx="46" cy="26" r="6" fill="#e0af68"/>
+  <circle cx="66" cy="26" r="6" fill="#9ece6a"/>
+  <text x="470" y="31" fill="#565f89" text-anchor="middle">DockerSmith 1.2.0</text>
+
+  <!-- tab bar -->
+  <text x="34" y="66" fill="#565f89">Images</text>
+  <text x="126" y="66" fill="#565f89">Containers</text>
+  <rect x="230" y="48" width="70" height="26" rx="6" fill="#20233a"/>
+  <text x="238" y="66" fill="#7aa2f7" font-weight="bold">Space</text>
+  <line x1="20" y1="84" x2="920" y2="84" stroke="#2a2e42"/>
+
+  <text x="28" y="108" fill="#9ece6a" font-weight="bold">Disk usage (docker system df)</text>
+
+  <!-- header -->
+  <text x="28"  y="140" fill="#9ece6a" font-weight="bold">TYPE</text>
+  <text x="180" y="140" fill="#9ece6a" font-weight="bold">TOTAL</text>
+  <text x="300" y="140" fill="#9ece6a" font-weight="bold">RECLAIMABLE</text>
+  <text x="450" y="140" fill="#9ece6a" font-weight="bold">ITEMS</text>
+  <text x="540" y="140" fill="#9ece6a" font-weight="bold">RECLAIMABLE</text>
+
+  <!-- Images -->
+  <text x="28"  y="172" fill="#c0caf5">Images</text>
+  <text x="180" y="172" fill="#c0caf5">4.20 GB</text>
+  <text x="300" y="172" fill="#e0af68">1.10 GB</text>
+  <text x="450" y="172" fill="#c0caf5">12</text>
+  <rect x="540" y="160" width="270" height="14" rx="3" fill="#2a2e42"/>
+  <rect x="540" y="160" width="70"  height="14" rx="3" fill="#e0af68"/>
+  <text x="822" y="172" fill="#565f89">26%</text>
+
+  <!-- Containers -->
+  <text x="28"  y="204" fill="#c0caf5">Containers</text>
+  <text x="180" y="204" fill="#c0caf5">320 MB</text>
+  <text x="300" y="204" fill="#e0af68">90 MB</text>
+  <text x="450" y="204" fill="#c0caf5">6</text>
+  <rect x="540" y="192" width="270" height="14" rx="3" fill="#2a2e42"/>
+  <rect x="540" y="192" width="76"  height="14" rx="3" fill="#e0af68"/>
+  <text x="822" y="204" fill="#565f89">28%</text>
+
+  <!-- Volumes -->
+  <text x="28"  y="236" fill="#c0caf5">Volumes</text>
+  <text x="180" y="236" fill="#c0caf5">1.80 GB</text>
+  <text x="300" y="236" fill="#e0af68">0 B</text>
+  <text x="450" y="236" fill="#c0caf5">4</text>
+  <rect x="540" y="224" width="270" height="14" rx="3" fill="#2a2e42"/>
+  <text x="822" y="236" fill="#565f89">0%</text>
+
+  <!-- Build cache -->
+  <text x="28"  y="268" fill="#c0caf5">Build cache</text>
+  <text x="180" y="268" fill="#c0caf5">6.40 GB</text>
+  <text x="300" y="268" fill="#e0af68">5.90 GB</text>
+  <text x="450" y="268" fill="#c0caf5">88</text>
+  <rect x="540" y="256" width="270" height="14" rx="3" fill="#2a2e42"/>
+  <rect x="540" y="256" width="248" height="14" rx="3" fill="#e0af68"/>
+  <text x="822" y="268" fill="#565f89">92%</text>
+
+  <!-- summary -->
+  <text x="28" y="306" fill="#9ece6a">TOTAL RECLAIMABLE: </text>
+  <text x="232" y="306" fill="#e0af68" font-weight="bold">7.08 GB</text>
+  <text x="330" y="306" fill="#565f89">press </text>
+  <text x="392" y="306" fill="#7aa2f7">p</text>
+  <text x="404" y="306" fill="#565f89"> to prune</text>
+
+  <line x1="20" y1="322" x2="920" y2="322" stroke="#2a2e42"/>
+  <text x="24" y="348" fill="#565f89">q quit · : palette · ⇥ tab · p prune · r refresh · T theme · ? help</text>
+</svg>
