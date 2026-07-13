@@ -1,5 +1,7 @@
 //! Plain data models used across the app, decoupled from bollard's response types.
 
+use crate::util::ImageRef;
+
 /// A Docker image as shown in the images view.
 #[derive(Debug, Clone)]
 pub struct ImageInfo {
@@ -9,8 +11,10 @@ pub struct ImageInfo {
     pub repo_tags: Vec<String>,
     /// On-disk size in bytes.
     pub size: i64,
-    /// Number of containers using this image (-1 if not computed).
-    pub containers: i64,
+    /// Unix creation timestamp (seconds).
+    pub created: i64,
+    /// Version label of the image, if published.
+    pub version: Option<String>,
 }
 
 impl ImageInfo {
@@ -24,6 +28,45 @@ impl ImageInfo {
         format!("<none> ({})", self.short_id())
     }
 
+    /// A shortened name with the registry host stripped (shown in SOURCE instead).
+    pub fn short_name(&self) -> String {
+        let full = self.display_name();
+        if let Some((first, rest)) = full.split_once('/') {
+            if first.contains('.') || first.contains(':') {
+                return rest.to_string();
+            }
+        }
+        full
+    }
+
+    /// A short origin label (e.g. `docker`, `ghcr`, `lscr`, or a custom host).
+    pub fn source_short(&self) -> String {
+        match self.primary_reference() {
+            Some(reference) => {
+                let reg = ImageRef::parse(&reference).registry;
+                match reg.as_str() {
+                    "index.docker.io" | "docker.io" => "docker".to_string(),
+                    "ghcr.io" => "ghcr".to_string(),
+                    "lscr.io" => "lscr".to_string(),
+                    "quay.io" => "quay".to_string(),
+                    "registry.gitlab.com" => "gitlab".to_string(),
+                    other => other.split(':').next().unwrap_or(other).to_string(),
+                }
+            }
+            None => "—".to_string(),
+        }
+    }
+
+    /// Creation date as `YYYY-MM-DD`, or `—` if unknown.
+    pub fn created_date(&self) -> String {
+        if self.created <= 0 {
+            return "—".to_string();
+        }
+        chrono::DateTime::from_timestamp(self.created, 0)
+            .map(|dt| dt.format("%Y-%m-%d").to_string())
+            .unwrap_or_else(|| "—".to_string())
+    }
+
     /// Short image id without the `sha256:` prefix.
     pub fn short_id(&self) -> String {
         self.id
@@ -32,11 +75,6 @@ impl ImageInfo {
             .chars()
             .take(12)
             .collect()
-    }
-
-    /// True when no container references this image.
-    pub fn is_unused(&self) -> bool {
-        self.containers <= 0
     }
 
     /// The primary reference to use for registry lookups.
@@ -128,7 +166,7 @@ impl DiskUsage {
 }
 
 /// The result of an update check for a single image/container.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum UpdateStatus {
     /// Currently being checked.
     Checking,
@@ -143,7 +181,7 @@ pub enum UpdateStatus {
 }
 
 /// Detailed result of an update check, including version/date comparison.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct UpdateInfo {
     pub status: UpdateStatus,
     /// Version label of the running/local image (e.g. `16.2`), if published.
@@ -156,6 +194,12 @@ pub struct UpdateInfo {
     pub latest_date: Option<String>,
     /// Best-guess GitHub `owner/repo` for the changelog, if determinable.
     pub changelog_repo: Option<String>,
+    /// The local image id this result was computed against (for cache staleness).
+    #[serde(default)]
+    pub local_id: Option<String>,
+    /// When this check completed.
+    #[serde(default)]
+    pub checked_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 impl UpdateInfo {
@@ -168,6 +212,8 @@ impl UpdateInfo {
             current_date: None,
             latest_date: None,
             changelog_repo: None,
+            local_id: None,
+            checked_at: None,
         }
     }
 

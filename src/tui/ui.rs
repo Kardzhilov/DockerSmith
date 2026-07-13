@@ -73,7 +73,7 @@ fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_images(f: &mut Frame, app: &App, area: Rect) {
     let theme = app.theme();
-    let header = Row::new(vec!["IMAGE", "SIZE", "USED BY", "UPDATE"])
+    let header = Row::new(vec!["IMAGE", "VERSION", "DATE", "SOURCE", "SIZE", "UPDATE"])
         .style(Style::default().fg(theme.secondary).add_modifier(Modifier::BOLD));
 
     let rows: Vec<Row> = app
@@ -86,13 +86,20 @@ fn draw_images(f: &mut Frame, app: &App, area: Rect) {
                 .and_then(|r| app.updates().get(&r).cloned());
             let style = row_style(theme, i == app.selected());
             Row::new(vec![
-                Cell::from(img.display_name()),
+                Cell::from(img.short_name()),
+                Cell::from(Span::styled(
+                    img.version.clone().unwrap_or_else(|| "—".to_string()),
+                    Style::default().fg(theme.fg),
+                )),
+                Cell::from(Span::styled(
+                    img.created_date(),
+                    Style::default().fg(theme.dim),
+                )),
+                Cell::from(Span::styled(
+                    img.source_short(),
+                    Style::default().fg(theme.secondary),
+                )),
                 Cell::from(format_bytes(img.size)),
-                Cell::from(if img.is_unused() {
-                    "—".to_string()
-                } else {
-                    format!("{} container(s)", img.containers.max(0))
-                }),
                 Cell::from(update_cell(theme, info.as_ref())),
             ])
             .style(style)
@@ -102,10 +109,12 @@ fn draw_images(f: &mut Frame, app: &App, area: Rect) {
     let table = Table::new(
         rows,
         [
-            Constraint::Percentage(40),
+            Constraint::Percentage(26),
             Constraint::Length(12),
-            Constraint::Length(16),
-            Constraint::Min(20),
+            Constraint::Length(11),
+            Constraint::Length(8),
+            Constraint::Length(10),
+            Constraint::Min(16),
         ],
     )
     .header(header)
@@ -442,13 +451,13 @@ fn draw_scroll_overlay(f: &mut Frame, app: &App) {
     let visible_height = area.height.saturating_sub(2) as usize;
     let start = app
         .overlay_scroll()
-        .min(app.overlay_lines().len().saturating_sub(1));
+        .min(app.overlay_view().len().saturating_sub(1));
     let lines: Vec<Line> = app
-        .overlay_lines()
+        .overlay_view()
         .iter()
         .skip(start)
         .take(visible_height)
-        .map(|l| Line::from(l.clone()))
+        .cloned()
         .collect();
 
     let title = if app.overlay_title().is_empty() {
@@ -561,6 +570,15 @@ fn draw_update_details(f: &mut Frame, app: &App) {
                 UpdateStatus::Error(e) => val(format!("error: {e}"), theme.err),
             };
             lines.push(Line::from(vec![label("status"), status_span]));
+            if let Some(checked) = info.checked_at {
+                lines.push(Line::from(vec![
+                    label("checked"),
+                    Span::styled(
+                        crate::util::format_relative(checked),
+                        Style::default().fg(theme.dim),
+                    ),
+                ]));
+            }
             lines.push(Line::from(""));
 
             lines.push(Line::from(vec![

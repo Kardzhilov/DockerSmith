@@ -17,6 +17,8 @@ use crossterm::terminal::{
 };
 use futures_util::StreamExt;
 use ratatui::backend::CrosstermBackend;
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
 use ratatui::Terminal;
 use tokio::sync::mpsc::{self, UnboundedSender};
 
@@ -167,8 +169,8 @@ pub struct App {
     /// image reference -> latest stats sample.
     stats: HashMap<String, ContainerStats>,
 
-    /// Scrollback for the logs / changelog overlay.
-    overlay_lines: Vec<String>,
+    /// Scrollback (styled) for the logs / changelog overlay.
+    overlay_view: Vec<Line<'static>>,
     overlay_scroll: usize,
     overlay_title: String,
 
@@ -190,9 +192,12 @@ pub async fn run(config: Config) -> Result<()> {
     let (tx, mut rx) = mpsc::unbounded_channel::<AppEvent>();
 
     let theme = Theme::by_name(&config.theme);
+    let state = State::load();
+    // Restore previously fetched update results so they show immediately.
+    let updates = state.update_cache.clone();
     let mut app = App {
         client,
-        state: State::load(),
+        state,
         theme,
         tab: Tab::Images,
         overlay: Overlay::None,
@@ -200,9 +205,9 @@ pub async fn run(config: Config) -> Result<()> {
         containers: Vec::new(),
         usage: None,
         selected: 0,
-        updates: HashMap::new(),
+        updates,
         stats: HashMap::new(),
-        overlay_lines: Vec::new(),
+        overlay_view: Vec::new(),
         overlay_scroll: 0,
         overlay_title: String::new(),
         status_message: "Loading…".to_string(),
@@ -339,8 +344,8 @@ impl App {
     pub fn status_message(&self) -> &str {
         &self.status_message
     }
-    pub fn overlay_lines(&self) -> &[String] {
-        &self.overlay_lines
+    pub fn overlay_view(&self) -> &[Line<'static>] {
+        &self.overlay_view
     }
     pub fn overlay_scroll(&self) -> usize {
         self.overlay_scroll
@@ -432,12 +437,19 @@ impl App {
                         .unwrap_or_default();
                     self.status_message = format!("update available: {image}{detail}");
                 }
+                // Persist conclusive results (not transient errors) so they
+                // survive restarts.
+                if !matches!(info.status, UpdateStatus::Error(_)) {
+                    self.state.update_cache.insert(image.clone(), info.clone());
+                    let _ = self.state.save();
+                }
                 self.updates.insert(image, info);
             }
             AppEvent::Reloaded(data) => {
                 self.images = data.images;
                 self.containers = data.containers;
                 self.usage = Some(data.usage);
+                self.invalidate_stale_updates();
                 self.clamp_selection();
                 self.status_message = format!(
                     "{} images · {} containers",
@@ -446,13 +458,13 @@ impl App {
                 );
             }
             AppEvent::Logs(lines) => {
-                self.overlay_lines = lines;
-                self.overlay_scroll = self.overlay_lines.len().saturating_sub(1);
+                self.overlay_view = lines.into_iter().map(Line::from).collect();
+                self.overlay_scroll = self.overlay_view.len().saturating_sub(1);
                 self.overlay = Overlay::Logs;
             }
             AppEvent::Changelog(title, releases) => {
                 self.overlay_title = title;
-                self.overlay_lines = render_changelog(&releases);
+                self.overlay_view = self.changelog_lines(&releases);
                 self.overlay_scroll = 0;
                 self.overlay = Overlay::Changelog;
             }
@@ -569,13 +581,13 @@ impl App {
             Overlay::Logs | Overlay::Changelog | Overlay::Help => match key.code {
                 KeyCode::Esc | KeyCode::Char('q') => {
                     self.overlay = Overlay::None;
-                    self.overlay_lines.clear();
+                    self.overlay_view.clear();
                 }
                 KeyCode::Down | KeyCode::Char('j') => {
                     self.overlay_scroll = self
                         .overlay_scroll
                         .saturating_add(1)
-                        .min(self.overlay_lines.len().saturating_sub(1));
+                        .min(self.overlay_view.len().saturating_sub(1));
                 }
                 KeyCode::Up | KeyCode::Char('k') => {
                     self.overlay_scroll = self.overlay_scroll.saturating_sub(1);
@@ -975,30 +987,66 @@ impl App {
             }));
         });
     }
-}
 
-/// Render releases into displayable lines.
-fn render_changelog(releases: &[registry::Release]) -> Vec<String> {
-    let mut lines = Vec::new();
-    if releases.is_empty() {
-        lines.push("No releases found.".to_string());
-        return lines;
-    }
-    for r in releases {
-        let title = r.name.clone().unwrap_or_else(|| r.tag_name.clone());
-        let date = r.published_at.clone().unwrap_or_default();
-        lines.push(format!("── {title}  ({})", &date.chars().take(10).collect::<String>()));
-        if let Some(url) = &r.html_url {
-            lines.push(url.clone());
-        }
-        if let Some(body) = &r.body {
-            for line in body.lines() {
-                lines.push(line.to_string());
+    /// Drop cached update results whose local image id has since changed.
+    fn invalidate_stale_updates(&mut self) {
+        let mut id_by_ref: HashMap<String, String> = HashMap::new();
+        for img in &self.images {
+            if let Some(reference) = img.primary_reference() {
+                id_by_ref.insert(reference, img.id.clone());
             }
         }
-        lines.push(String::new());
+        let stale: Vec<String> = self
+            .updates
+            .iter()
+            .filter_map(|(reference, info)| match (&info.local_id, id_by_ref.get(reference)) {
+                (Some(cached), Some(current)) if cached != current => Some(reference.clone()),
+                _ => None,
+            })
+            .collect();
+        for reference in stale {
+            self.updates.remove(&reference);
+            self.state.update_cache.remove(&reference);
+        }
     }
-    lines
+
+    /// Render release notes into styled, markdown-formatted lines.
+    fn changelog_lines(&self, releases: &[registry::Release]) -> Vec<Line<'static>> {
+        let theme = &self.theme;
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        if releases.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "No releases found.".to_string(),
+                Style::default().fg(theme.dim),
+            )));
+            return lines;
+        }
+        for r in releases {
+            let title = r.name.clone().unwrap_or_else(|| r.tag_name.clone());
+            let date = r
+                .published_at
+                .clone()
+                .unwrap_or_default()
+                .chars()
+                .take(10)
+                .collect::<String>();
+            lines.push(Line::from(Span::styled(
+                format!("── {title}  ({date})"),
+                Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
+            )));
+            if let Some(url) = &r.html_url {
+                lines.push(Line::from(Span::styled(
+                    url.clone(),
+                    Style::default().fg(theme.dim),
+                )));
+            }
+            if let Some(body) = &r.body {
+                lines.extend(crate::md::render(body, theme));
+            }
+            lines.push(Line::from(String::new()));
+        }
+        lines
+    }
 }
 
 /// Enter raw mode + alternate screen with mouse capture.

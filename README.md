@@ -12,12 +12,15 @@ Docker socket (no shelling out to the `docker` CLI).
 **Core**
 
 - **Images & containers** — browse all images and running/stopped containers with
-  size, state, and live CPU/memory for the selected container.
+  size, state, and live CPU/memory for the selected container. The images view also
+  shows each image's **version**, **build date**, and **source** (a short origin like
+  `docker`, `ghcr`, `lscr`).
 - **Update checking** — compares your local image digest against the registry
   manifest (no layers pulled) to flag available updates. Press `⏎` on any row for
   a details view showing the **current vs latest version and build date**, plus a
-  changelog link. Works with Docker Hub, GHCR, `lscr.io`, and private/self-hosted
-  registries via the daemon's credentials.
+  changelog link. Results are **remembered across restarts**, so a known-outdated
+  image still shows as such the next time you open DockerSmith. Works with Docker Hub,
+  GHCR, `lscr.io`, and private/self-hosted registries via the daemon's credentials.
 - **Disk usage & prune** — a Space view mirroring `docker system df` with a
   reclaimable breakdown per category, plus one-key pruning (dangling/all images,
   stopped containers, unused volumes, build cache, or everything).
@@ -28,7 +31,8 @@ Docker socket (no shelling out to the `docker` CLI).
 - **Lifecycle controls** — start/stop (`s`), restart (`R`), remove (`x`).
 - **Real-time stats** — CPU% and memory for the selected running container.
 - **Changelog viewer** (`w`) — pulls the latest GitHub Releases for GHCR images and
-  any image with an `org.opencontainers.image.source` label.
+  any image with an `org.opencontainers.image.source` label, rendered as formatted
+  **Markdown** (headings, lists, code, links).
 - **Defer / ignore** (`d`) — silence an update you don't want for 30 days.
 - **Opt-in apply** (`a`) — pull and recreate a container in-app (disabled by
   default; enable with `apply_mode = "apply"`).
@@ -97,8 +101,9 @@ name = "nas"
 endpoint = "ssh://user@nas"
 ```
 
-Runtime state (deferred updates, changelog source overrides, last check time) is
-stored separately in `~/.config/dockersmith/state.json`.
+Runtime state (deferred updates, changelog source overrides, and remembered update
+check results) is stored separately in `~/.config/dockersmith/state.json`. Cached
+results are automatically invalidated when the underlying local image changes.
 
 ## How update checking works
 

@@ -10,6 +10,20 @@ pub fn format_bytes(bytes: i64) -> String {
     format_size(bytes as u64, DECIMAL)
 }
 
+/// Format a past timestamp as a short relative string (e.g. `3h ago`).
+pub fn format_relative(dt: chrono::DateTime<chrono::Utc>) -> String {
+    let secs = chrono::Utc::now().signed_duration_since(dt).num_seconds().max(0);
+    if secs < 60 {
+        format!("{secs}s ago")
+    } else if secs < 3600 {
+        format!("{}m ago", secs / 60)
+    } else if secs < 86_400 {
+        format!("{}h ago", secs / 3600)
+    } else {
+        format!("{}d ago", secs / 86_400)
+    }
+}
+
 /// A parsed OCI image reference.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImageRef {

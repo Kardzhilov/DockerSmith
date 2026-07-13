@@ -40,6 +40,7 @@ directories = "5"
 humansize = "2"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
+pulldown-cmark = { version = "0.12", default-features = false }
 
 [profile.release]
 lto = true

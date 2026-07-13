@@ -68,11 +68,17 @@ impl DockerClient {
         let images = self.docker.list_images(Some(options)).await?;
         Ok(images
             .into_iter()
-            .map(|i| ImageInfo {
-                id: i.id,
-                repo_tags: i.repo_tags,
-                size: i.size,
-                containers: i.containers,
+            .map(|i| {
+                let version = crate::registry::VERSION_LABELS
+                    .iter()
+                    .find_map(|k| i.labels.get(*k).filter(|v| !v.is_empty()).cloned());
+                ImageInfo {
+                    id: i.id,
+                    repo_tags: i.repo_tags,
+                    size: i.size,
+                    created: i.created,
+                    version,
+                }
             })
             .collect())
     }
@@ -195,6 +201,8 @@ impl DockerClient {
                 changelog_repo,
                 latest_version: None,
                 latest_date: None,
+                local_id: Some(local_id),
+                checked_at: Some(chrono::Utc::now()),
             };
         }
 
@@ -213,6 +221,8 @@ impl DockerClient {
                     current_date,
                     latest_date: meta.created,
                     changelog_repo,
+                    local_id: Some(local_id),
+                    checked_at: Some(chrono::Utc::now()),
                 }
             }
             Err(e) => UpdateInfo {
@@ -222,6 +232,8 @@ impl DockerClient {
                 changelog_repo,
                 latest_version: None,
                 latest_date: None,
+                local_id: Some(local_id),
+                checked_at: Some(chrono::Utc::now()),
             },
         }
     }

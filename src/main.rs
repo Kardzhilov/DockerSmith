@@ -5,6 +5,7 @@
 mod cli;
 mod config;
 mod docker;
+mod md;
 mod notify;
 mod registry;
 mod selfupdate;

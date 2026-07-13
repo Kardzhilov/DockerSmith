@@ -13,6 +13,8 @@ use chrono::{DateTime, Utc};
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 
+use crate::docker::model::UpdateInfo;
+
 /// A remote (or extra local) Docker host.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HostConfig {
@@ -161,6 +163,10 @@ pub struct State {
     /// image reference -> a pinned changelog source (owner/repo) override.
     #[serde(default)]
     pub changelog_sources: HashMap<String, String>,
+
+    /// image reference -> last update-check result, remembered across restarts.
+    #[serde(default)]
+    pub update_cache: HashMap<String, UpdateInfo>,
 
     /// Last time a full update check completed.
     #[serde(default)]
