@@ -12,8 +12,10 @@ use bollard::query_parameters::{
 use bollard::{Docker, API_DEFAULT_VERSION};
 use futures_util::StreamExt;
 
-pub use model::{ContainerInfo, DiskUsage, ImageInfo, UpdateInfo, UpdateStatus};
-
+pub use model::{
+    ApplyProgress, ApplyStage, ContainerInfo, DiskUsage, ImageInfo, StageState, UpdateInfo,
+    UpdateStatus,
+};
 /// A connected Docker client for a single host.
 #[derive(Clone)]
 pub struct DockerClient {
@@ -184,7 +186,8 @@ impl DockerClient {
             });
 
         // Locally-built images have no registry digest to compare against.
-        if local.repo_digests.clone().unwrap_or_default().is_empty() {
+        let repo_digests = local.repo_digests.clone().unwrap_or_default();
+        if repo_digests.is_empty() {
             return UpdateInfo {
                 status: UpdateStatus::LocalOnly,
                 current_version,
@@ -197,35 +200,44 @@ impl DockerClient {
             };
         }
 
-        // Remote image metadata (no layers pulled).
-        match crate::registry::fetch_remote_meta(image).await {
-            Ok(meta) => {
-                let status = if local_id == meta.config_digest {
-                    UpdateStatus::UpToDate
-                } else {
-                    UpdateStatus::UpdateAvailable
-                };
-                UpdateInfo {
-                    status,
-                    current_version,
-                    latest_version: meta.version,
-                    current_date,
-                    latest_date: meta.created,
-                    changelog_repo,
-                    local_id: Some(local_id),
-                    checked_at: Some(chrono::Utc::now()),
+        // Determine status by comparing manifest digests via the daemon's
+        // distribution-inspect (robust across image stores and multi-arch, and
+        // uses the daemon's registry credentials for private registries).
+        let status = match self.docker.inspect_registry_image(image, None).await {
+            Ok(remote) => match remote.descriptor.digest.filter(|d| !d.is_empty()) {
+                Some(remote_digest) => {
+                    let up_to_date = repo_digests.iter().any(|rd| {
+                        rd.rsplit_once('@')
+                            .map(|(_, d)| d == remote_digest)
+                            .unwrap_or(false)
+                    });
+                    if up_to_date {
+                        UpdateStatus::UpToDate
+                    } else {
+                        UpdateStatus::UpdateAvailable
+                    }
                 }
-            }
-            Err(e) => UpdateInfo {
-                status: UpdateStatus::Error(format!("{e:#}")),
-                current_version,
-                current_date,
-                changelog_repo,
-                latest_version: None,
-                latest_date: None,
-                local_id: Some(local_id),
-                checked_at: Some(chrono::Utc::now()),
+                None => UpdateStatus::Error("registry returned no digest".to_string()),
             },
+            Err(e) => UpdateStatus::Error(format!("{e}")),
+        };
+
+        // Best-effort enrichment: the latest image's version label and build date,
+        // read from the registry config blob (a few KB, no layers).
+        let (latest_version, latest_date) = match crate::registry::fetch_remote_meta(image).await {
+            Ok(meta) => (meta.version, meta.created),
+            Err(_) => (None, None),
+        };
+
+        UpdateInfo {
+            status,
+            current_version,
+            latest_version,
+            current_date,
+            latest_date,
+            changelog_repo,
+            local_id: Some(local_id),
+            checked_at: Some(chrono::Utc::now()),
         }
     }
 
@@ -378,22 +390,45 @@ impl DockerClient {
     /// policy, devices, capabilities, etc.), and network attachments. The old
     /// container is renamed aside first and restored automatically if the new
     /// one fails to start.
-    pub async fn apply_update<F: FnMut(String)>(
+    ///
+    /// Emits structured [`ApplyProgress`] events describing each stage.
+    pub async fn apply_update<F: FnMut(ApplyProgress)>(
         &self,
         id: &str,
         image: &str,
-        mut on_progress: F,
+        mut report: F,
     ) -> Result<()> {
         use bollard::query_parameters::{
             CreateContainerOptionsBuilder, InspectContainerOptions, RemoveContainerOptionsBuilder,
             RenameContainerOptionsBuilder, StartContainerOptions, StopContainerOptions,
         };
+        use model::ApplyProgress::{Log, Stage};
+        use model::ApplyStage as St;
+        use model::StageState as SS;
 
-        let inspect = self
+        // Emit a final "Done" event and return, so the UI always gets a terminal state.
+        macro_rules! fail {
+            ($report:expr, $stage:expr, $msg:expr) => {{
+                let m: String = $msg;
+                $report(Stage($stage, SS::Failed(m.clone())));
+                $report(Stage(St::Done, SS::Failed(m.clone())));
+                return Err(anyhow!(m));
+            }};
+        }
+
+        // 1. Inspect.
+        report(Stage(St::Inspect, SS::Start));
+        let inspect = match self
             .docker
             .inspect_container(id, None::<InspectContainerOptions>)
             .await
-            .context("inspecting container")?;
+        {
+            Ok(v) => {
+                report(Stage(St::Inspect, SS::Done));
+                v
+            }
+            Err(e) => fail!(report, St::Inspect, format!("inspect failed: {e}")),
+        };
         let name = inspect
             .name
             .clone()
@@ -401,24 +436,27 @@ impl DockerClient {
             .trim_start_matches('/')
             .to_string();
         if name.is_empty() {
-            return Err(anyhow!("could not determine container name"));
+            fail!(report, St::Inspect, "could not determine container name".to_string());
         }
-        let config = inspect
-            .config
-            .clone()
-            .ok_or_else(|| anyhow!("container has no config to preserve"))?;
+        let Some(config) = inspect.config.clone() else {
+            fail!(report, St::Inspect, "container has no config to preserve".to_string());
+        };
         let host_config = inspect.host_config.clone();
         let networks = inspect.network_settings.and_then(|n| n.networks);
 
-        // Pull the new image first (streaming progress).
-        on_progress(format!("pulling {image}…"));
-        self.pull_image(image, |l| on_progress(l)).await?;
+        // 2. Pull the new image (streaming detail lines).
+        report(Stage(St::Pull, SS::Start));
+        if let Err(e) = self.pull_image(image, |l| report(Log(l))).await {
+            fail!(report, St::Pull, format!("pull failed: {e:#}"));
+        }
+        report(Stage(St::Pull, SS::Done));
 
-        // Reconstruct a create body from the running config via a JSON round-trip
-        // (ContainerConfig and ContainerCreateBody share the same field names).
+        // Build the create spec from the running config (JSON round-trip).
         let mut body: bollard::models::ContainerCreateBody =
-            serde_json::from_value(serde_json::to_value(&config)?)
-                .context("building create spec")?;
+            match serde_json::to_value(&config).and_then(serde_json::from_value) {
+                Ok(b) => b,
+                Err(e) => fail!(report, St::Create, format!("building create spec: {e}")),
+            };
         body.image = Some(image.to_string());
         body.host_config = host_config;
         if let Some(nets) = networks {
@@ -427,49 +465,40 @@ impl DockerClient {
             });
         }
 
-        // Rename the old container aside so it can be restored on failure.
-        let backup = format!("{name}_dockersmith_old");
-        on_progress("stopping old container…".to_string());
+        // 3. Stop old container (non-fatal if already stopped).
+        report(Stage(St::Stop, SS::Start));
         let _ = self
             .docker
             .stop_container(id, None::<StopContainerOptions>)
             .await;
-        self.docker
+        report(Stage(St::Stop, SS::Done));
+
+        // 4. Rename old container aside (point of no return once done).
+        report(Stage(St::Rename, SS::Start));
+        let backup = format!("{name}_dockersmith_old");
+        if let Err(e) = self
+            .docker
             .rename_container(
                 id,
                 RenameContainerOptionsBuilder::default().name(&backup).build(),
             )
             .await
-            .context("renaming old container")?;
-
-        on_progress("creating new container…".to_string());
-        let create_opts = CreateContainerOptionsBuilder::default().name(&name).build();
-        let recreate = async {
-            let created = self.docker.create_container(Some(create_opts), body).await?;
-            self.docker
-                .start_container(&created.id, None::<StartContainerOptions>)
-                .await?;
-            Ok::<_, anyhow::Error>(())
+        {
+            fail!(report, St::Rename, format!("rename failed: {e}"));
         }
-        .await;
+        report(Stage(St::Rename, SS::Done));
 
         let force_remove = RemoveContainerOptionsBuilder::default().force(true).build();
-        match recreate {
-            Ok(()) => {
-                on_progress("removing old container…".to_string());
+
+        // Restore the old container after a failure past the rename step.
+        macro_rules! rollback {
+            ($report:expr, $stage:expr, $msg:expr) => {{
+                let m: String = $msg;
+                $report(Stage($stage, SS::Failed(m.clone())));
+                $report(Stage(St::Rollback, SS::Start));
                 let _ = self
                     .docker
-                    .remove_container(&backup, Some(force_remove))
-                    .await;
-                on_progress(format!("updated {name}"));
-                Ok(())
-            }
-            Err(e) => {
-                // Roll back: remove the failed new container and restore the old one.
-                on_progress("update failed — rolling back…".to_string());
-                let _ = self
-                    .docker
-                    .remove_container(&name, Some(force_remove))
+                    .remove_container(&name, Some(force_remove.clone()))
                     .await;
                 let _ = self
                     .docker
@@ -482,9 +511,44 @@ impl DockerClient {
                     .docker
                     .start_container(&name, None::<StartContainerOptions>)
                     .await;
-                Err(e.context("recreating container (rolled back)"))
-            }
+                $report(Stage(St::Rollback, SS::Done));
+                $report(Stage(St::Done, SS::Failed(m.clone())));
+                return Err(anyhow!(m));
+            }};
         }
+
+        // 5. Create new container.
+        report(Stage(St::Create, SS::Start));
+        let create_opts = CreateContainerOptionsBuilder::default().name(&name).build();
+        let created = match self.docker.create_container(Some(create_opts), body).await {
+            Ok(c) => {
+                report(Stage(St::Create, SS::Done));
+                c
+            }
+            Err(e) => rollback!(report, St::Create, format!("create failed: {e}")),
+        };
+
+        // 6. Start new container.
+        report(Stage(St::Start, SS::Start));
+        if let Err(e) = self
+            .docker
+            .start_container(&created.id, None::<StartContainerOptions>)
+            .await
+        {
+            rollback!(report, St::Start, format!("start failed: {e}"));
+        }
+        report(Stage(St::Start, SS::Done));
+
+        // 7. Remove the old backup container.
+        report(Stage(St::Cleanup, SS::Start));
+        let _ = self
+            .docker
+            .remove_container(&backup, Some(force_remove))
+            .await;
+        report(Stage(St::Cleanup, SS::Done));
+
+        report(Stage(St::Done, SS::Done));
+        Ok(())
     }
 }
 

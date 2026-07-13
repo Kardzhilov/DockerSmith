@@ -8,7 +8,7 @@ use ratatui::widgets::{
 };
 use ratatui::Frame;
 
-use super::{App, ClickRegion, ClickTarget, ConfirmAction, Overlay, Tab, UiAction};
+use super::{App, ClickRegion, ClickTarget, ConfirmAction, Overlay, StepStatus, Tab, UiAction};
 use crate::docker::model::{UpdateInfo, UpdateStatus};
 use crate::util::format_bytes;
 
@@ -54,6 +54,7 @@ pub fn draw(f: &mut Frame, app: &App, regions: &mut Vec<ClickRegion>) {
         Overlay::Prune => draw_prune_menu(f, app, regions),
         Overlay::Palette => draw_palette(f, app, regions),
         Overlay::UpdateDetails => draw_update_details(f, app, regions),
+        Overlay::ApplyProgress => draw_apply_progress(f, app),
         Overlay::Confirm(action) => draw_confirm(f, app, action, regions),
         Overlay::Logs | Overlay::Changelog => draw_scroll_overlay(f, app),
     }
@@ -791,6 +792,115 @@ fn draw_update_details(f: &mut Frame, app: &App, regions: &mut Vec<ClickRegion>)
     push_region(regions, base_x + 28, footer_row, 9, ClickTarget::Action(UiAction::CloseOverlay));
 }
 
+
+/// The live progress overlay for an in-flight container update.
+fn draw_apply_progress(f: &mut Frame, app: &App) {
+    let theme = app.theme();
+    let Some(a) = app.apply() else {
+        return;
+    };
+    let area = centered_rect(70, 76, f.area());
+    f.render_widget(Clear, area);
+
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::from(Span::styled(
+        a.title.clone(),
+        Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::from(""));
+
+    // Checklist of stages.
+    for (stage, status) in &a.steps {
+        let (icon, color) = step_icon(theme, *status);
+        let label_color = if *status == StepStatus::Pending {
+            theme.dim
+        } else {
+            theme.fg
+        };
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {icon}  "), Style::default().fg(color)),
+            Span::styled(stage.label().to_string(), Style::default().fg(label_color)),
+        ]));
+    }
+    if let Some(rb) = a.rollback {
+        let (icon, _) = step_icon(theme, rb);
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {icon}  "), Style::default().fg(theme.warn)),
+            Span::styled(
+                "Roll back to previous container".to_string(),
+                Style::default().fg(theme.warn),
+            ),
+        ]));
+    }
+
+    lines.push(Line::from(""));
+
+    // Error detail, if any.
+    if let Some(err) = &a.error {
+        lines.push(Line::from(Span::styled(
+            "ERROR".to_string(),
+            Style::default().fg(theme.err).add_modifier(Modifier::BOLD),
+        )));
+        for l in err.lines() {
+            lines.push(Line::from(Span::styled(
+                format!("  {l}"),
+                Style::default().fg(theme.err),
+            )));
+        }
+        lines.push(Line::from(""));
+    }
+
+    // Recent output (tail of the detail log).
+    if !a.log.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "recent output".to_string(),
+            Style::default().fg(theme.secondary),
+        )));
+        let start = a.log.len().saturating_sub(8);
+        for l in &a.log[start..] {
+            lines.push(Line::from(Span::styled(
+                format!("  {l}"),
+                Style::default().fg(theme.dim),
+            )));
+        }
+        lines.push(Line::from(""));
+    }
+
+    let footer = if !a.finished {
+        Span::styled("working…".to_string(), Style::default().fg(theme.accent))
+    } else if a.success {
+        Span::styled(
+            "✔ update complete — press Esc to close".to_string(),
+            Style::default().fg(theme.ok),
+        )
+    } else {
+        Span::styled(
+            "✖ update failed — previous container restored — press Esc to close".to_string(),
+            Style::default().fg(theme.err),
+        )
+    };
+    lines.push(Line::from(footer));
+
+    f.render_widget(
+        Paragraph::new(lines)
+            .block(overlay_block(theme, " Applying update "))
+            .wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
+/// Icon + color for an apply step status.
+fn step_icon(
+    theme: &crate::theme::Theme,
+    status: StepStatus,
+) -> (&'static str, ratatui::style::Color) {
+    match status {
+        StepStatus::Pending => ("○", theme.dim),
+        StepStatus::Running => ("◐", theme.accent),
+        StepStatus::Done => ("✔", theme.ok),
+        StepStatus::Failed => ("✖", theme.err),
+    }
+}
 
 /// A centered rectangle occupying `percent_x` × `percent_y` of `r`.
 fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {

@@ -69,18 +69,21 @@ pub async fn run_check(cfg: Config, host: Option<String>) -> Result<()> {
     for c in &containers {
         let info = client.check_update_detailed(&c.image).await;
         use crate::docker::model::UpdateStatus;
-        let detail = match (info.current_label(), info.latest_label()) {
-            (Some(a), Some(b)) => format!("  {a} → {b}"),
-            (Some(a), None) => format!("  ({a})"),
-            _ => String::new(),
-        };
         match info.status {
             UpdateStatus::UpdateAvailable => {
                 updates += 1;
+                let detail = info
+                    .transition()
+                    .map(|t| format!("  {t}"))
+                    .unwrap_or_default();
                 println!("  UPDATE   {:<24} {}{detail}", c.display_name(), c.image);
             }
             UpdateStatus::UpToDate => {
-                println!("  ok       {:<24} {}{detail}", c.display_name(), c.image);
+                let ver = info
+                    .current_label()
+                    .map(|v| format!("  ({v})"))
+                    .unwrap_or_default();
+                println!("  ok       {:<24} {}{ver}", c.display_name(), c.image);
             }
             UpdateStatus::LocalOnly => {
                 println!("  local    {:<24} {}", c.display_name(), c.image);
@@ -142,11 +145,28 @@ pub async fn run_apply(cfg: Config, container: String, host: Option<String>) -> 
         .with_context(|| format!("no container named '{container}'"))?;
 
     println!("Updating {} ({})…", target.name, target.image);
-    client
-        .apply_update(&target.id, &target.image, |line| println!("  {line}"))
-        .await?;
-    println!("Done.");
-    Ok(())
+    use crate::docker::{ApplyProgress, StageState};
+    let result = client
+        .apply_update(&target.id, &target.image, |p| match p {
+            ApplyProgress::Stage(s, StageState::Start) => println!("  → {}", s.label()),
+            ApplyProgress::Stage(s, StageState::Done) => {
+                if s.label() != "Finished" {
+                    println!("  ✔ {}", s.label());
+                }
+            }
+            ApplyProgress::Stage(s, StageState::Failed(e)) => {
+                eprintln!("  ✖ {} — {e}", s.label())
+            }
+            ApplyProgress::Log(l) => println!("      {l}"),
+        })
+        .await;
+    match result {
+        Ok(()) => {
+            println!("Done.");
+            Ok(())
+        }
+        Err(e) => Err(e),
+    }
 }
 
 /// `dockersmith doctor`

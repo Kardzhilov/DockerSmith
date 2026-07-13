@@ -81,8 +81,6 @@ pub async fn fetch_releases(
 /// Remote image metadata read from the registry (no layers pulled).
 #[derive(Debug, Clone)]
 pub struct RemoteImageMeta {
-    /// The image config digest (`sha256:...`), used to detect updates.
-    pub config_digest: String,
     /// Version label of the latest image, if published.
     pub version: Option<String>,
     /// Creation date (YYYY-MM-DD) of the latest image, if available.
@@ -175,11 +173,7 @@ pub async fn fetch_remote_meta(image: &str) -> Result<RemoteImageMeta> {
         Err(_) => (None, None),
     };
 
-    Ok(RemoteImageMeta {
-        config_digest,
-        version,
-        created,
-    })
+    Ok(RemoteImageMeta { version, created })
 }
 
 /// Obtain a Bearer token for the given repository, if the registry requires one.

@@ -25,7 +25,10 @@ use tokio::sync::mpsc::{self, UnboundedSender};
 
 use crate::config::{Config, State};
 use crate::docker::model::{UpdateInfo, UpdateStatus};
-use crate::docker::{ContainerInfo, ContainerStats, DiskUsage, DockerClient, ImageInfo};
+use crate::docker::{
+    ApplyProgress, ApplyStage, ContainerInfo, ContainerStats, DiskUsage, DockerClient, ImageInfo,
+    StageState,
+};
 use crate::registry;
 use crate::theme::Theme;
 
@@ -73,6 +76,8 @@ pub enum Overlay {
     Palette,
     /// Details of the selected image's update check (versions, dates, changelog).
     UpdateDetails,
+    /// Live progress of an in-flight container update.
+    ApplyProgress,
     /// A yes/no confirmation, carrying the action to run on confirm.
     Confirm(ConfirmAction),
 }
@@ -177,6 +182,85 @@ impl ClickRegion {
     }
 }
 
+/// The status of a single apply step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StepStatus {
+    Pending,
+    Running,
+    Done,
+    Failed,
+}
+
+/// Live state of an in-progress (or finished) container update.
+#[derive(Debug, Clone)]
+pub struct ApplyState {
+    pub title: String,
+    pub steps: Vec<(ApplyStage, StepStatus)>,
+    pub rollback: Option<StepStatus>,
+    pub log: Vec<String>,
+    pub error: Option<String>,
+    pub finished: bool,
+    pub success: bool,
+}
+
+impl ApplyState {
+    fn new(title: String) -> Self {
+        Self {
+            title,
+            steps: ApplyStage::SEQUENCE
+                .iter()
+                .map(|s| (*s, StepStatus::Pending))
+                .collect(),
+            rollback: None,
+            log: Vec::new(),
+            error: None,
+            finished: false,
+            success: false,
+        }
+    }
+
+    /// Fold a progress event into the state.
+    fn apply(&mut self, progress: ApplyProgress) {
+        match progress {
+            ApplyProgress::Log(line) => {
+                self.log.push(line);
+                if self.log.len() > 300 {
+                    let excess = self.log.len() - 300;
+                    self.log.drain(0..excess);
+                }
+            }
+            ApplyProgress::Stage(ApplyStage::Done, state) => {
+                self.finished = true;
+                self.success = matches!(state, StageState::Done);
+                if let StageState::Failed(m) = state {
+                    if self.error.is_none() {
+                        self.error = Some(m);
+                    }
+                }
+            }
+            ApplyProgress::Stage(ApplyStage::Rollback, state) => {
+                self.rollback = Some(step_status(&state));
+            }
+            ApplyProgress::Stage(stage, state) => {
+                if let Some(entry) = self.steps.iter_mut().find(|(s, _)| *s == stage) {
+                    entry.1 = step_status(&state);
+                }
+                if let StageState::Failed(m) = state {
+                    self.error = Some(m);
+                }
+            }
+        }
+    }
+}
+
+fn step_status(state: &StageState) -> StepStatus {
+    match state {
+        StageState::Start => StepStatus::Running,
+        StageState::Done => StepStatus::Done,
+        StageState::Failed(_) => StepStatus::Failed,
+    }
+}
+
 /// Messages delivered to the main loop from background tasks and input.
 enum AppEvent {
     Input(CEvent),
@@ -191,8 +275,8 @@ enum AppEvent {
     Changelog(String, Vec<registry::Release>),
     /// A stats sample for a container.
     Stats(String, ContainerStats),
-    /// A streaming progress/apply line.
-    Progress(String),
+    /// A structured container-update progress event.
+    Apply(ApplyProgress),
     /// A transient status message.
     Message(String),
 }
@@ -237,6 +321,9 @@ pub struct App {
     palette_query: String,
     palette_index: usize,
 
+    /// State of an in-progress or finished container update.
+    apply: Option<ApplyState>,
+
     /// Clickable regions recorded during the last render.
     regions: Vec<ClickRegion>,
 
@@ -273,6 +360,7 @@ pub async fn run(config: Config) -> Result<()> {
         should_quit: false,
         palette_query: String::new(),
         palette_index: 0,
+        apply: None,
         regions: Vec::new(),
         config,
         tx: tx.clone(),
@@ -418,6 +506,9 @@ impl App {
     pub fn palette_query(&self) -> &str {
         &self.palette_query
     }
+    pub fn apply(&self) -> Option<&ApplyState> {
+        self.apply.as_ref()
+    }
     pub fn palette_index(&self) -> usize {
         self.palette_index
     }
@@ -527,8 +618,16 @@ impl App {
             AppEvent::Stats(image, stats) => {
                 self.stats.insert(image, stats);
             }
-            AppEvent::Progress(line) => {
-                self.status_message = line;
+            AppEvent::Apply(progress) => {
+                let mut finished = false;
+                if let Some(a) = self.apply.as_mut() {
+                    a.apply(progress);
+                    finished = a.finished;
+                }
+                if finished {
+                    // Refresh the container/image lists after the update settles.
+                    self.spawn_reload();
+                }
             }
             AppEvent::Message(msg) => {
                 self.status_message = msg;
@@ -664,6 +763,14 @@ impl App {
                 }
                 _ => {}
             },
+            Overlay::ApplyProgress => {
+                // Only allow dismissing once the operation has finished.
+                if matches!(key.code, KeyCode::Esc | KeyCode::Char('q'))
+                    && self.apply.as_ref().map(|a| a.finished).unwrap_or(true)
+                {
+                    self.overlay = Overlay::None;
+                }
+            }
             Overlay::Palette => match key.code {
                 KeyCode::Esc => self.overlay = Overlay::None,
                 KeyCode::Enter => {
@@ -716,9 +823,13 @@ impl App {
                     Some(ClickTarget::Action(a)) => self.run_ui_action(a),
                     None => {
                         // A click outside every hit region dismisses a dismissable
-                        // overlay (confirmations must be answered explicitly).
+                        // overlay (confirmations and in-flight updates must not be
+                        // dismissed by a stray click).
+                        let apply_running = matches!(self.overlay, Overlay::ApplyProgress)
+                            && self.apply.as_ref().map(|a| !a.finished).unwrap_or(false);
                         if self.overlay != Overlay::None
                             && !matches!(self.overlay, Overlay::Confirm(_))
+                            && !apply_running
                         {
                             self.overlay = Overlay::None;
                             self.overlay_view.clear();
@@ -1121,24 +1232,16 @@ impl App {
                 self.schedule_reload();
             }
             ConfirmAction::ApplyUpdate(id, image) => {
+                self.apply = Some(ApplyState::new(format!("Updating {image}")));
+                self.overlay = Overlay::ApplyProgress;
                 let tx2 = tx.clone();
                 tokio::spawn(async move {
-                    let tx3 = tx2.clone();
-                    let result = client
-                        .apply_update(&id, &image, |line| {
-                            let _ = tx3.send(AppEvent::Progress(line));
+                    let _ = client
+                        .apply_update(&id, &image, move |p| {
+                            let _ = tx2.send(AppEvent::Apply(p));
                         })
                         .await;
-                    match result {
-                        Ok(_) => {
-                            let _ = tx2.send(AppEvent::Message(format!("updated {image}")));
-                        }
-                        Err(e) => {
-                            let _ = tx2.send(AppEvent::Message(format!("apply failed: {e:#}")));
-                        }
-                    }
                 });
-                self.schedule_reload();
             }
         }
     }

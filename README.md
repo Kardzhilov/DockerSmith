@@ -36,8 +36,10 @@ Docker socket (no shelling out to the `docker` CLI).
 - **Defer / ignore** (`d`) — silence an update you don't want for 30 days.
 - **Apply updates** (`a`) — on the Containers tab, press `a` (or use the footer /
   command palette) to pull the new image and **recreate the container** in place,
-  preserving its volumes, ports, environment, restart policy, and networks. A
-  confirmation is always required, and the previous container is restored
+  preserving its volumes, ports, environment, restart policy, and networks. A live
+  **progress overview** shows every step (inspect → pull → stop → recreate → start →
+  cleanup) as it completes, streams the pull output, and reports any error clearly.
+  A confirmation is always required, and the previous container is restored
   automatically if the new one fails to start.
 - **Command palette** (`:` or `Ctrl-P`) — fuzzy-search every action.
 - **Scheduled checks + notifications** — periodic background update checks that push

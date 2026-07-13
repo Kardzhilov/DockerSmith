@@ -112,6 +112,66 @@ impl ContainerInfo {
     }
 }
 
+/// A step in the container-update (apply) process.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApplyStage {
+    Inspect,
+    Pull,
+    Stop,
+    Rename,
+    Create,
+    Start,
+    Cleanup,
+    Rollback,
+    /// Terminal marker for the whole operation.
+    Done,
+}
+
+impl ApplyStage {
+    /// The ordered checklist of stages shown to the user.
+    pub const SEQUENCE: [ApplyStage; 7] = [
+        ApplyStage::Inspect,
+        ApplyStage::Pull,
+        ApplyStage::Stop,
+        ApplyStage::Rename,
+        ApplyStage::Create,
+        ApplyStage::Start,
+        ApplyStage::Cleanup,
+    ];
+
+    /// A human-readable label for the stage.
+    pub fn label(&self) -> &'static str {
+        match self {
+            ApplyStage::Inspect => "Inspect container",
+            ApplyStage::Pull => "Pull new image",
+            ApplyStage::Stop => "Stop old container",
+            ApplyStage::Rename => "Set old container aside",
+            ApplyStage::Create => "Create new container",
+            ApplyStage::Start => "Start new container",
+            ApplyStage::Cleanup => "Remove old container",
+            ApplyStage::Rollback => "Roll back",
+            ApplyStage::Done => "Finished",
+        }
+    }
+}
+
+/// The state a stage transitioned into.
+#[derive(Debug, Clone)]
+pub enum StageState {
+    Start,
+    Done,
+    Failed(String),
+}
+
+/// A progress event emitted while applying a container update.
+#[derive(Debug, Clone)]
+pub enum ApplyProgress {
+    /// A stage changed state.
+    Stage(ApplyStage, StageState),
+    /// A detail line (e.g. image pull progress).
+    Log(String),
+}
+
 /// Aggregated disk usage, mirroring `docker system df`.
 #[derive(Debug, Clone, Default)]
 pub struct DiskUsage {
