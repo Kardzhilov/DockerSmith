@@ -8,7 +8,7 @@ use ratatui::widgets::{
 };
 use ratatui::Frame;
 
-use super::{App, ClickRegion, ClickTarget, ConfirmAction, Overlay, StepStatus, Tab, UiAction};
+use super::{App, ClickRegion, ClickTarget, ConfirmAction, Overlay, SortKey, StepStatus, Tab, UiAction};
 use crate::docker::model::{UpdateInfo, UpdateStatus};
 use crate::util::format_bytes;
 
@@ -100,8 +100,7 @@ fn draw_tabs(f: &mut Frame, app: &App, area: Rect, regions: &mut Vec<ClickRegion
 
 fn draw_images(f: &mut Frame, app: &App, area: Rect, regions: &mut Vec<ClickRegion>, base: bool) {
     let theme = app.theme();
-    let header = Row::new(vec!["IMAGE", "VERSION", "DATE", "SOURCE", "SIZE", "UPDATE"])
-        .style(Style::default().fg(theme.secondary).add_modifier(Modifier::BOLD));
+    let header = sort_header(app, Tab::Images);
 
     let rows: Vec<Row> = app
         .images()
@@ -148,12 +147,25 @@ fn draw_images(f: &mut Frame, app: &App, area: Rect, regions: &mut Vec<ClickRegi
     .block(list_block(theme, &format!(" Images ({}) ", app.images().len())));
     f.render_widget(table, area);
     record_rows(regions, area, app.images().len(), base);
+    record_header(
+        regions,
+        area,
+        &[
+            Constraint::Percentage(26),
+            Constraint::Length(12),
+            Constraint::Length(11),
+            Constraint::Length(8),
+            Constraint::Length(10),
+            Constraint::Min(16),
+        ],
+        Tab::Images,
+        base,
+    );
 }
 
 fn draw_containers(f: &mut Frame, app: &App, area: Rect, regions: &mut Vec<ClickRegion>, base: bool) {
     let theme = app.theme();
-    let header = Row::new(vec!["NAME", "IMAGE", "STATE", "CPU%", "MEM", "UPDATE"])
-        .style(Style::default().fg(theme.secondary).add_modifier(Modifier::BOLD));
+    let header = sort_header(app, Tab::Containers);
 
     let rows: Vec<Row> = app
         .containers()
@@ -208,6 +220,67 @@ fn draw_containers(f: &mut Frame, app: &App, area: Rect, regions: &mut Vec<Click
     ));
     f.render_widget(table, area);
     record_rows(regions, area, app.containers().len(), base);
+    record_header(
+        regions,
+        area,
+        &[
+            Constraint::Percentage(20),
+            Constraint::Percentage(26),
+            Constraint::Length(14),
+            Constraint::Length(7),
+            Constraint::Length(13),
+            Constraint::Min(16),
+        ],
+        Tab::Containers,
+        base,
+    );
+}
+
+/// Build a table header row whose active sort column shows a direction arrow.
+fn sort_header(app: &App, tab: Tab) -> Row<'static> {
+    let theme = app.theme();
+    let (key, desc) = app.sort();
+    let style = Style::default().fg(theme.secondary).add_modifier(Modifier::BOLD);
+    let active = Style::default().fg(theme.accent).add_modifier(Modifier::BOLD);
+    let cells: Vec<Cell> = SortKey::columns(tab)
+        .iter()
+        .map(|(label, k)| {
+            if *k == key {
+                let arrow = if desc { "↓" } else { "↑" };
+                Cell::from(Span::styled(format!("{label} {arrow}"), active))
+            } else {
+                Cell::from(Span::styled(label.to_string(), style))
+            }
+        })
+        .collect();
+    Row::new(cells)
+}
+
+/// Record a clickable header region per column so clicking a header sorts by it.
+fn record_header(
+    regions: &mut Vec<ClickRegion>,
+    area: Rect,
+    constraints: &[Constraint],
+    tab: Tab,
+    base: bool,
+) {
+    if !base {
+        return;
+    }
+    // The header row sits on the first line inside the block border.
+    let inner = Rect {
+        x: area.x + 1,
+        y: area.y + 1,
+        width: area.width.saturating_sub(2),
+        height: 1,
+    };
+    let cells = Layout::horizontal(constraints).spacing(1).split(inner);
+    for (rect, (_, key)) in cells.iter().zip(SortKey::columns(tab).iter()) {
+        regions.push(ClickRegion {
+            rect: *rect,
+            target: ClickTarget::Header(*key),
+        });
+    }
 }
 
 /// Record a clickable region for each visible table row.
@@ -377,6 +450,7 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect, regions: &mut Vec<ClickRegi
             ("r refresh", UiAction::Refresh),
         ]),
     }
+    segments.push(("o sort", UiAction::CycleSort));
     segments.push(("y select", UiAction::ToggleMouse));
     segments.push(("T theme", UiAction::CycleTheme));
     segments.push(("? help", UiAction::Help));
@@ -427,6 +501,7 @@ fn draw_help(f: &mut Frame, app: &App) {
         Line::from("  x            remove container"),
         Line::from("  d            defer update 30 days"),
         Line::from("  p            prune menu"),
+        Line::from("  o / O        cycle sort column / reverse direction"),
         Line::from("  y            select mode (mouse off, so you can copy text)"),
         Line::from("  T            cycle theme"),
         Line::from("  q / Esc      quit / close overlay"),

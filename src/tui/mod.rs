@@ -64,6 +64,62 @@ impl Tab {
     }
 }
 
+/// A sortable list column. Which columns are valid depends on the active tab.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SortKey {
+    Name,
+    Version,
+    Date,
+    Source,
+    Size,
+    Update,
+    Image,
+    State,
+    Cpu,
+    Mem,
+}
+
+impl SortKey {
+    /// The ordered sortable columns for a tab, each paired with its header label.
+    pub fn columns(tab: Tab) -> &'static [(&'static str, SortKey)] {
+        match tab {
+            Tab::Images => &[
+                ("IMAGE", SortKey::Name),
+                ("VERSION", SortKey::Version),
+                ("DATE", SortKey::Date),
+                ("SOURCE", SortKey::Source),
+                ("SIZE", SortKey::Size),
+                ("UPDATE", SortKey::Update),
+            ],
+            Tab::Containers => &[
+                ("NAME", SortKey::Name),
+                ("IMAGE", SortKey::Image),
+                ("STATE", SortKey::State),
+                ("CPU%", SortKey::Cpu),
+                ("MEM", SortKey::Mem),
+                ("UPDATE", SortKey::Update),
+            ],
+            Tab::Space => &[],
+        }
+    }
+
+    /// Short label for status messages.
+    fn label(self) -> &'static str {
+        match self {
+            SortKey::Name => "name",
+            SortKey::Version => "version",
+            SortKey::Date => "date",
+            SortKey::Source => "source",
+            SortKey::Size => "size",
+            SortKey::Update => "update",
+            SortKey::Image => "image",
+            SortKey::State => "state",
+            SortKey::Cpu => "cpu",
+            SortKey::Mem => "mem",
+        }
+    }
+}
+
 /// Which modal overlay (if any) is currently active.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Overlay {
@@ -143,6 +199,7 @@ pub enum UiAction {
     Defer,
     OpenPrune,
     CycleTheme,
+    CycleSort,
     ToggleMouse,
     Help,
     OpenPalette,
@@ -164,6 +221,8 @@ pub enum ClickTarget {
     Tab(Tab),
     Row(usize),
     Action(UiAction),
+    /// A column header; clicking sorts by that column.
+    Header(SortKey),
 }
 
 /// A rectangular hit region recorded during rendering.
@@ -262,6 +321,29 @@ fn step_status(state: &StageState) -> StepStatus {
     }
 }
 
+/// Compare two optional strings, ordering `None` last.
+fn opt_cmp(a: &Option<String>, b: &Option<String>) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    match (a, b) {
+        (Some(x), Some(y)) => x.to_lowercase().cmp(&y.to_lowercase()),
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => Ordering::Equal,
+    }
+}
+
+/// A sort rank for an update status: most actionable first, unknown last.
+fn update_rank(info: Option<&UpdateInfo>) -> u8 {
+    match info.map(|i| &i.status) {
+        Some(UpdateStatus::UpdateAvailable) => 0,
+        Some(UpdateStatus::Checking) => 1,
+        Some(UpdateStatus::UpToDate) => 2,
+        Some(UpdateStatus::LocalOnly) => 3,
+        Some(UpdateStatus::Error(_)) => 4,
+        None => 5,
+    }
+}
+
 /// Messages delivered to the main loop from background tasks and input.
 enum AppEvent {
     Input(CEvent),
@@ -304,6 +386,10 @@ pub struct App {
 
     /// Selection index per tab.
     selected: usize,
+
+    /// Sort column and direction (`true` = descending) for each list tab.
+    sort_images: (SortKey, bool),
+    sort_containers: (SortKey, bool),
 
     /// image reference -> latest known update status.
     updates: HashMap<String, UpdateInfo>,
@@ -355,6 +441,8 @@ pub async fn run(config: Config) -> Result<()> {
         containers: Vec::new(),
         usage: None,
         selected: 0,
+        sort_images: (SortKey::Name, false),
+        sort_containers: (SortKey::Name, false),
         updates,
         stats: HashMap::new(),
         overlay_view: Vec::new(),
@@ -481,6 +569,10 @@ impl App {
     }
     pub fn selected(&self) -> usize {
         self.selected
+    }
+    /// The active sort column and direction for the current tab.
+    pub fn sort(&self) -> (SortKey, bool) {
+        self.sort_state(self.tab)
     }
     pub fn updates(&self) -> &HashMap<String, UpdateInfo> {
         &self.updates
@@ -619,6 +711,7 @@ impl App {
                 self.containers = data.containers;
                 self.usage = Some(data.usage);
                 self.invalidate_stale_updates();
+                self.apply_sort();
                 self.clamp_selection();
                 self.status_message = format!(
                     "{} images · {} containers",
@@ -660,6 +753,16 @@ impl App {
 
     async fn handle_key(&mut self, key: KeyEvent) -> Result<()> {
         if key.kind == KeyEventKind::Release {
+            return Ok(());
+        }
+
+        // Select mode toggle works everywhere except where 'y' means something else
+        // (confirmation dialogs, palette text entry).
+        if key.code == KeyCode::Char('y')
+            && key.modifiers.is_empty()
+            && !matches!(self.overlay, Overlay::Confirm(_) | Overlay::Palette)
+        {
+            self.toggle_mouse_capture();
             return Ok(());
         }
 
@@ -711,7 +814,8 @@ impl App {
             }
             (KeyCode::Char('p'), _) => self.overlay = Overlay::Prune,
             (KeyCode::Char('T'), _) => self.cycle_theme(),
-            (KeyCode::Char('y'), _) => self.toggle_mouse_capture(),
+            (KeyCode::Char('o'), _) => self.cycle_sort(),
+            (KeyCode::Char('O'), _) => self.toggle_sort_dir(),
             (KeyCode::Char('?'), _) => self.overlay = Overlay::Help,
             (KeyCode::Char(':'), _) => {
                 self.palette_query.clear();
@@ -844,6 +948,7 @@ impl App {
                     Some(ClickTarget::Tab(tab)) => self.set_tab(tab),
                     Some(ClickTarget::Row(i)) => self.click_row(i),
                     Some(ClickTarget::Action(a)) => self.run_ui_action(a),
+                    Some(ClickTarget::Header(key)) => self.sort_by(key),
                     None => {
                         // A click outside every hit region dismisses a dismissable
                         // overlay (confirmations and in-flight updates must not be
@@ -916,6 +1021,7 @@ impl App {
             UiAction::Defer => self.defer_selected(),
             UiAction::OpenPrune => self.overlay = Overlay::Prune,
             UiAction::CycleTheme => self.cycle_theme(),
+            UiAction::CycleSort => self.cycle_sort(),
             UiAction::ToggleMouse => self.toggle_mouse_capture(),
             UiAction::Help => self.overlay = Overlay::Help,
             UiAction::OpenPalette => {
@@ -979,6 +1085,133 @@ impl App {
             self.selected = 0;
         } else if self.selected >= count {
             self.selected = count - 1;
+        }
+    }
+
+    // ── Sorting ──────────────────────────────────────────────────────────────
+    /// The sort column and direction for a given tab.
+    fn sort_state(&self, tab: Tab) -> (SortKey, bool) {
+        match tab {
+            Tab::Images => self.sort_images,
+            Tab::Containers => self.sort_containers,
+            Tab::Space => (SortKey::Name, false),
+        }
+    }
+
+    /// Cycle the sort column forward through the current tab's columns.
+    fn cycle_sort(&mut self) {
+        let cols = SortKey::columns(self.tab);
+        if cols.is_empty() {
+            return;
+        }
+        let (cur, _) = self.sort_state(self.tab);
+        let idx = cols.iter().position(|(_, k)| *k == cur).unwrap_or(0);
+        let next = cols[(idx + 1) % cols.len()].1;
+        self.set_sort(next, false);
+    }
+
+    /// Toggle ascending/descending for the current tab's sort column.
+    fn toggle_sort_dir(&mut self) {
+        let (key, desc) = self.sort_state(self.tab);
+        self.set_sort(key, !desc);
+    }
+
+    /// Sort by a specific column. Clicking the active column flips its direction.
+    fn sort_by(&mut self, key: SortKey) {
+        let (cur, desc) = self.sort_state(self.tab);
+        let desc = if cur == key { !desc } else { false };
+        self.set_sort(key, desc);
+    }
+
+    /// Set the sort state for the current tab and re-sort the list.
+    fn set_sort(&mut self, key: SortKey, desc: bool) {
+        match self.tab {
+            Tab::Images => self.sort_images = (key, desc),
+            Tab::Containers => self.sort_containers = (key, desc),
+            Tab::Space => return,
+        }
+        self.apply_sort();
+        self.clamp_selection();
+        let arrow = if desc { "↓" } else { "↑" };
+        self.status_message = format!("sorted by {} {arrow}", key.label());
+    }
+
+    /// Re-sort both lists in place, keeping the current selection on the same item.
+    fn apply_sort(&mut self) {
+        let keep = self.selected_id();
+
+        let (ikey, idesc) = self.sort_images;
+        let updates = std::mem::take(&mut self.updates);
+        let mut images = std::mem::take(&mut self.images);
+        images.sort_by(|a, b| {
+            let ord = match ikey {
+                SortKey::Name => a.short_name().to_lowercase().cmp(&b.short_name().to_lowercase()),
+                SortKey::Version => opt_cmp(&a.version, &b.version),
+                SortKey::Date => a.created.cmp(&b.created),
+                SortKey::Source => a.source_short().cmp(&b.source_short()),
+                SortKey::Size => a.size.cmp(&b.size),
+                SortKey::Update => {
+                    let ra = a.primary_reference().and_then(|r| updates.get(&r));
+                    let rb = b.primary_reference().and_then(|r| updates.get(&r));
+                    update_rank(ra).cmp(&update_rank(rb))
+                }
+                _ => a.short_name().to_lowercase().cmp(&b.short_name().to_lowercase()),
+            };
+            if idesc { ord.reverse() } else { ord }
+        });
+        self.images = images;
+
+        let (ckey, cdesc) = self.sort_containers;
+        let stats = std::mem::take(&mut self.stats);
+        let mut containers = std::mem::take(&mut self.containers);
+        containers.sort_by(|a, b| {
+            let ord = match ckey {
+                SortKey::Name => a.display_name().to_lowercase().cmp(&b.display_name().to_lowercase()),
+                SortKey::Image => a.image.to_lowercase().cmp(&b.image.to_lowercase()),
+                SortKey::State => a.state.cmp(&b.state),
+                SortKey::Cpu => {
+                    let ca = stats.get(&a.image).map(|s| s.cpu_percent).unwrap_or(-1.0);
+                    let cb = stats.get(&b.image).map(|s| s.cpu_percent).unwrap_or(-1.0);
+                    ca.partial_cmp(&cb).unwrap_or(std::cmp::Ordering::Equal)
+                }
+                SortKey::Mem => {
+                    let ma = stats.get(&a.image).map(|s| s.mem_usage).unwrap_or(-1);
+                    let mb = stats.get(&b.image).map(|s| s.mem_usage).unwrap_or(-1);
+                    ma.cmp(&mb)
+                }
+                SortKey::Update => {
+                    let ra = updates.get(&a.image);
+                    let rb = updates.get(&b.image);
+                    update_rank(ra).cmp(&update_rank(rb))
+                }
+                _ => a.display_name().to_lowercase().cmp(&b.display_name().to_lowercase()),
+            };
+            if cdesc { ord.reverse() } else { ord }
+        });
+        self.containers = containers;
+
+        self.updates = updates;
+        self.stats = stats;
+
+        // Restore the selection onto the same item after reordering.
+        if let Some(id) = keep {
+            let idx = match self.tab {
+                Tab::Images => self.images.iter().position(|i| i.id == id),
+                Tab::Containers => self.containers.iter().position(|c| c.id == id),
+                Tab::Space => None,
+            };
+            if let Some(i) = idx {
+                self.selected = i;
+            }
+        }
+    }
+
+    /// Identity of the currently selected item (for preserving selection across sorts).
+    fn selected_id(&self) -> Option<String> {
+        match self.tab {
+            Tab::Images => self.images.get(self.selected).map(|i| i.id.clone()),
+            Tab::Containers => self.containers.get(self.selected).map(|c| c.id.clone()),
+            Tab::Space => None,
         }
     }
 
