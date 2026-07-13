@@ -1,0 +1,180 @@
+name: Release
+
+# Automatically cut a release on every push to main.
+#
+# Versioning:
+#   * The first release is v1.0.0.
+#   * Afterwards the version bumps automatically:
+#       - PATCH by default,
+#       - MINOR if any commit since the last release contains the word "MINOR",
+#       - MAJOR if any commit since the last release contains the word "MAJOR".
+#   * Add "[skip release]" to a commit message to skip cutting a release.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  version:
+    name: Compute version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.bump.outputs.version }}
+      tag: ${{ steps.bump.outputs.tag }}
+      release: ${{ steps.bump.outputs.release }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # full history + tags for version detection
+
+      - id: bump
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          latest=$(git tag -l 'v*.*.*' --sort=-v:refname | head -n1 || true)
+
+          if [ -z "$latest" ]; then
+            # No prior release — the first release is v1.0.0.
+            next="1.0.0"
+            release="true"
+          else
+            cur="${latest#v}"
+            IFS='.' read -r major minor patch <<< "$cur"
+
+            commits="$(git log "${latest}..HEAD" --format='%B' || true)"
+
+            if [ -z "$(git log "${latest}..HEAD" --format='%H' || true)" ]; then
+              # HEAD is already released — nothing new to publish.
+              release="false"
+              next="$cur"
+            elif echo "$commits" | grep -qw 'MAJOR'; then
+              major=$((major + 1)); minor=0; patch=0
+              release="true"
+            elif echo "$commits" | grep -qw 'MINOR'; then
+              minor=$((minor + 1)); patch=0
+              release="true"
+            else
+              patch=$((patch + 1))
+              release="true"
+            fi
+            next="${major}.${minor}.${patch}"
+          fi
+
+          # Allow opting out of a release for a given commit.
+          if git log -1 --format='%B' | grep -qiE '\[skip release\]'; then
+            release="false"
+          fi
+
+          echo "version=$next" >> "$GITHUB_OUTPUT"
+          echo "tag=v$next" >> "$GITHUB_OUTPUT"
+          echo "release=$release" >> "$GITHUB_OUTPUT"
+          echo "Next version: v$next (release=$release)"
+
+  test:
+    name: Test
+    needs: version
+    if: needs.version.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --locked
+      - run: cargo clippy --locked -- -D warnings
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: [version, test]
+    if: needs.version.outputs.release == 'true'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            cross: false
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            cross: true
+          - target: x86_64-apple-darwin
+            os: macos-13
+            cross: false
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            cross: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set crate version
+        shell: bash
+        run: |
+          v="${{ needs.version.outputs.version }}"
+          sed -i.bak -E "0,/^version = \".*\"/s//version = \"$v\"/" Cargo.toml
+          rm -f Cargo.toml.bak
+          grep -m1 '^version = ' Cargo.toml
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Install cross
+        if: matrix.cross
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
+
+      - name: Build
+        shell: bash
+        run: |
+          if [ "${{ matrix.cross }}" = "true" ]; then
+            cross build --release --locked --target ${{ matrix.target }}
+          else
+            cargo build --release --locked --target ${{ matrix.target }}
+          fi
+
+      - name: Package binary
+        shell: bash
+        run: |
+          out="dockersmith-${{ matrix.target }}"
+          cp "target/${{ matrix.target }}/release/dockersmith" "$out"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dockersmith-${{ matrix.target }}
+          path: dockersmith-${{ matrix.target }}
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    needs: [version, build]
+    if: needs.version.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.version.outputs.tag }}
+          name: ${{ needs.version.outputs.tag }}
+          generate_release_notes: true
+          files: artifacts/dockersmith-*

@@ -11,7 +11,7 @@ use anyhow::{Context, Result};
 use crate::registry;
 
 /// The GitHub repo DockerSmith releases are published to.
-const RELEASE_REPO: &str = "mythos/DockerSmith";
+const RELEASE_REPO: &str = "Kardzhilov/DockerSmith";
 
 /// Check for a newer release and, if found, download and swap the binary in place.
 pub async fn run(token: Option<&str>) -> Result<()> {
